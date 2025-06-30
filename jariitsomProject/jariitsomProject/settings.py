@@ -10,6 +10,8 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
+
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -42,10 +44,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'dj_rest_auth',
-    # 밑에랑 중복이라 주석처리 함 확인했으면 삭제
-    # 'django.contrib.sites',
-    # 'allauth',
-    # 'allauth.account',
+    
     'dj_rest_auth.registration',
 
     # 소셜 로그인 설정
@@ -56,6 +55,7 @@ INSTALLED_APPS = [
     'allauth.socialaccount.providers.kakao', #카카오로 바꿈
 
     'accounts',
+    'stores',
 ]
 
 MIDDLEWARE = [
@@ -85,6 +85,9 @@ LOGIN_REDIRECT_URL = '/'
 REST_FRAMEWORK = { 
 	'DEFAULT_AUTHENTICATION_CLASSES': [
     'rest_framework.authentication.TokenAuthentication', 
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated', # 모든 요청 시 인증된 사용자만 허용
     ],
 }
 
@@ -146,7 +149,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Seoul'
 
 USE_I18N = True
 

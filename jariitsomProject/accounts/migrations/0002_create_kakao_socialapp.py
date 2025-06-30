@@ -7,16 +7,19 @@ def create_kakao_social_app(apps, schema_editor):
     SocialApp = apps.get_model('socialaccount', 'SocialApp')
     Site = apps.get_model('sites', 'Site')
 
-    site = Site.objects.get(id=1)
+    site, _ = Site.objects.get_or_create(
+        id=1,
+        defaults={'domain': '127.0.0.1:8000', 'name': '127.0.0.1:8000'}
+    )
 
-    kakao_app = SocialApp.objects.create(
+    kakao_app, created = SocialApp.objects.get_or_create(
         provider='kakao',
         name='카카오소셜로그인',
         client_id='513115a371aaf22fcb4f017518332791',
         secret='', #kakao는 시크릿,
         key=''     #key 잘 안 씀 -> 비워둠
     )
-
+    
     kakao_app.sites.add(site)
 
 class Migration(migrations.Migration):
