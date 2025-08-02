@@ -6,15 +6,16 @@ class Store(models.Model) :
     #리스트[] & 튜플(), choices는 튜플 또는 튜플 리스트만 허용
     CATEGORY_CHOICES = [
         #'DB에 저장될 값', '사용자에게 보여줄 이름'
-        ('restaurant', '음식점'),
-        ('cafe', '카페/디저트'),
-    ]
-    SUBCATEGORY_CHOICES = [
+        ('cafe', '카페,디저트'),
         ('korean', '한식'),
-        ('snack', '분식'),
+        ('chinese', '중식'),
         ('japanese', '일식'),
         ('fastfood', '패스트푸드'),
-        ('salad', '샐러드'),
+        ('bunsik', '분식'),
+        ('healthy', '건강식'),
+        ('western', '양식'),
+        ('chicken', '치킨'),
+        ('bbq', '고깃집'),
     ]
 
     CONGESTION_CHOICES = [
@@ -24,8 +25,7 @@ class Store(models.Model) :
     ]
 
     #필터링을 위한 카테고리
-    category = models.CharField(verbose_name="카테고리", max_length=20, choices=CATEGORY_CHOICES)
-    subcategory = models.CharField(verbose_name="음식 종류", max_length=20, choices=SUBCATEGORY_CHOICES, blank=True, null=True)
+    category = models.CharField(verbose_name="카테고리", max_length=20, choices=CATEGORY_CHOICES, blank=True, null=True)
     
     photo = models.ImageField(verbose_name="가게 이미지", 
                               blank=True, null=True, upload_to='store_photo')
@@ -65,9 +65,7 @@ class Store(models.Model) :
         return False
 
     #가게 링크
-    naver_url = models.URLField(verbose_name="가게 네이버 링크", blank=True, null=True)
-
-    created_at = models.DateTimeField(verbose_name="등록일", auto_now_add=True)
+    kakao_url = models.URLField(verbose_name="카카오맵 링크", blank=True, null=True)
     
     def __str__(self):
         return self.name
