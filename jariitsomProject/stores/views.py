@@ -8,75 +8,7 @@ from .serializers import StoreSerializer, StoreCongestionSerializer
 from rest_framework.viewsets import ModelViewSet
 from django.db.models import F, Case, When, Value
 from rest_framework import filters
-
-# api view를 통해 혼잡도 입력부분 구현
-### 현재 손님 수만 입력하면 알아서 혼잡도의 정도를 정해서 db에 해당 내용 저장
-@api_view(['POST'])
-def update_store_congestion(request, store_id):
-    try:
-        store = Store.objects.get(id=store_id)
-    except Store.DoesNotExist:
-        return Response({'error': '가게를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # 현재 손님 수를 필수 입력 필드로 지정 -> 입력 안하면 err 생성
-    current_customers = request.data.get('current_customers')
-    
-    # 값이 비었거나 None이면 에러
-    if current_customers is None or str(current_customers).strip() == '':
-        return Response({'error': 'current_customers 값이 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # 정수로 변환 시도
-    try:
-        current_customers = int(current_customers)
-    except ValueError:
-        return Response({'error': 'current_customers는 정수여야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # 음수 값은 허용하지 않음
-    if current_customers < 0:
-        return Response({'error': 'current_customers는 0 이상의 정수여야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # 최대 손님 수가 입력 안되어있다면 에러 생성
-        # 근데 이건 우리가 직접 db에 입력하는거라면 굳이 싶긴한데 그래도 넣는게 안전할 듯
-    max_customers = store.max_customers
-    if max_customers <= 0:
-        return Response({'error': 'max_customers 값이 설정되어 있지 않거나 0입니다.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # 현재 인원수가 최대 수용 인원보다 크다면 에러 생성
-    if current_customers > max_customers:
-        return Response({'error': 'current_customers가 max_customers보다 클 수 없습니다.'}, status=status.HTTP_400_BAD_REQUEST)
-
-
-    # 혼잡도 계산
-    ratio = current_customers / store.max_customers
-    if ratio < 0.25:
-        congestion = 'low'
-    elif ratio < 0.75:
-        congestion = 'medium'
-    else:
-        congestion = 'high'
-
-    # serializer 입력용의 데이터 딕셔너리 구성
-    data = {
-        'current_customers': current_customers,
-        'congestion': congestion
-    }
-
-    serializer = StoreCongestionSerializer(store, data=data, partial=True)
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_200_OK)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-# 가게 혼잡도 정보 조회
-@api_view(['GET'])
-def get_store_congestion(request, store_id):
-    try:
-        store = Store.objects.get(id=store_id)
-    except Store.DoesNotExist:
-        return Response({'error': '가게를 찾을 수 없습니다.'}, status=404)
-
-    serializer = StoreSerializer(store, context={'request': request})
-    return Response(serializer.data, status=status.HTTP_200_OK)
+from .apis import get_places
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -176,3 +108,72 @@ def get_latest_visit_log(request, store_id):
 
     serializer = VisitLogSerializer(latest_log)
     return Response(serializer.data, status=200)
+
+# api view를 통해 혼잡도 입력부분 구현
+### 현재 손님 수만 입력하면 알아서 혼잡도의 정도를 정해서 db에 해당 내용 저장
+@api_view(['POST'])
+def update_store_congestion(request, store_id):
+    try:
+        store = Store.objects.get(id=store_id)
+    except Store.DoesNotExist:
+        return Response({'error': '가게를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # 현재 손님 수를 필수 입력 필드로 지정 -> 입력 안하면 err 생성
+    current_customers = request.data.get('current_customers')
+    
+    # 값이 비었거나 None이면 에러
+    if current_customers is None or str(current_customers).strip() == '':
+        return Response({'error': 'current_customers 값이 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 정수로 변환 시도
+    try:
+        current_customers = int(current_customers)
+    except ValueError:
+        return Response({'error': 'current_customers는 정수여야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 음수 값은 허용하지 않음
+    if current_customers < 0:
+        return Response({'error': 'current_customers는 0 이상의 정수여야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 최대 손님 수가 입력 안되어있다면 에러 생성
+        # 근데 이건 우리가 직접 db에 입력하는거라면 굳이 싶긴한데 그래도 넣는게 안전할 듯
+    max_customers = store.max_customers
+    if max_customers <= 0:
+        return Response({'error': 'max_customers 값이 설정되어 있지 않거나 0입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 현재 인원수가 최대 수용 인원보다 크다면 에러 생성
+    if current_customers > max_customers:
+        return Response({'error': 'current_customers가 max_customers보다 클 수 없습니다.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+    # 혼잡도 계산
+    ratio = current_customers / store.max_customers
+    if ratio < 0.25:
+        congestion = 'low'
+    elif ratio < 0.75:
+        congestion = 'medium'
+    else:
+        congestion = 'high'
+
+    # serializer 입력용의 데이터 딕셔너리 구성
+    data = {
+        'current_customers': current_customers,
+        'congestion': congestion
+    }
+
+    serializer = StoreCongestionSerializer(store, data=data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# 가게 혼잡도 정보 조회
+@api_view(['GET'])
+def get_store_congestion(request, store_id):
+    try:
+        store = Store.objects.get(id=store_id)
+    except Store.DoesNotExist:
+        return Response({'error': '가게를 찾을 수 없습니다.'}, status=404)
+
+    serializer = StoreSerializer(store, context={'request': request})
+    return Response(serializer.data, status=status.HTTP_200_OK)

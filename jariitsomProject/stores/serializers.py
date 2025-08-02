@@ -26,7 +26,7 @@ class StoreSerializer(serializers.ModelSerializer):
                   'rating', 'address', 'latitude', 'longitude', 
                   'congestion', 'current_customers', 'max_customers', 
                   'open_time', 'close_time', 'break_start_time', 'break_end_time', 
-                  'is_open', 'is_breaktime', 'is_bookmarked', 'naver_url', 'created_at' ]
+                  'is_open', 'is_breaktime', 'is_bookmarked', 'kakao_url', 'created_at' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
 
 # 혼잡도 구현을 위한 혼잡도 관련 필드만 처리하는 serializer
