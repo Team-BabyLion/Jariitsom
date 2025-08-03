@@ -58,7 +58,7 @@ def map_kakao_category(category_name):
         return 'chinese'
     if '일식' in category_name:
         return 'japanese'
-    if '패스트푸드' in category_name:
+    if '패스트푸드' in category_name or '치킨' in category_name:
         return 'fastfood'
     if '분식' in category_name:
         return 'bunsik'
@@ -66,8 +66,8 @@ def map_kakao_category(category_name):
         return 'healthy'
     if '양식' in category_name:
         return 'western'
-    if '치킨' in category_name:
-        return 'chicken'
     if '고기' in category_name or '갈비' in category_name or '겹살' in category_name:
         return 'bbq'
+    if '술집' in category_name:
+        return 'bar'
     return None

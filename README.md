@@ -21,6 +21,8 @@
 #### 로컬에서 작업한 후
 - 설치 패키지가 추가된 경우
   - pip freeze > requirements.txt(프로젝트 폴더 내에서)
+- 가게 정보가 변경되었을 경우
+  - python manage.py fetch_kakao_places
 2. git status(변경사항 확인, 필수 x)
 3. git add .
 4. git commit -m "커밋 메시지"
