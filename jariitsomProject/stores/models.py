@@ -14,8 +14,8 @@ class Store(models.Model) :
         ('bunsik', '분식'),
         ('healthy', '건강식'),
         ('western', '양식'),
-        ('chicken', '치킨'),
         ('bbq', '고깃집'),
+        ('bar', '주점'),
     ]
 
     CONGESTION_CHOICES = [
@@ -36,6 +36,9 @@ class Store(models.Model) :
     address = models.CharField(verbose_name="주소", max_length=200)
     latitude = models.FloatField(verbose_name="위도")
     longitude = models.FloatField(verbose_name="경도")
+
+    main_gate_distance = models.IntegerField(default=0)  # 정문까지 거리(m)
+    back_gate_distance = models.IntegerField(default=0)  # 후문까지 거리(m)
     
     #혼잡도
     congestion = models.CharField(verbose_name="혼잡도", max_length=10, choices=CONGESTION_CHOICES, default='low')
