@@ -27,8 +27,7 @@ class Store(models.Model) :
     #필터링을 위한 카테고리
     category = models.CharField(verbose_name="카테고리", max_length=20, choices=CATEGORY_CHOICES, blank=True, null=True)
     
-    photo = models.ImageField(verbose_name="가게 이미지", 
-                              blank=True, null=True, upload_to='store_photo')
+    photo = models.URLField(verbose_name="가게 이미지", blank=True, null=True)
     name = models.CharField(verbose_name="가게 이름", max_length=100)
     rating = models.FloatField(verbose_name="별점", default=0.0)
     
@@ -46,26 +45,7 @@ class Store(models.Model) :
     max_customers = models.IntegerField(verbose_name="최대 수용 인원", default=0)
 
     #영업 시간
-    open_time = models.TimeField(verbose_name="영업 시작 시간", blank=True, null=True)
-    close_time = models.TimeField(verbose_name="영업 종료 시간", blank=True, null=True)
-    break_start_time = models.TimeField(verbose_name="브레이크타임 시작 시간", blank=True, null=True)
-    break_end_time = models.TimeField(verbose_name="브레이크타임 종료 시간", blank=True, null=True)
-
-    def is_open_now(self):
-        now = timezone.localtime().time()
-        # timezone.now() → 현재 시간을 반환, timezone.localtime() → 로컬 시간으로 바꿔줌
-        # 내부적으로 timezone.now() 호출: timezone.localtime(timezone.now()).time()
-        # 현재 시간(.localtime)을 얻고, 시간 부분만 분리(.time)
-        if self.open_time and self.close_time: 
-            return self.open_time <= now <= self.close_time
-            # 지금이 영업 시간 범위에 포함되는지 True, False 반환
-        return False
-
-    def is_breaktime_now(self):
-        now = timezone.localtime().time()
-        if self.break_start_time and self.break_end_time:
-            return self.break_start_time <= now <= self.break_end_time
-        return False
+    business_hours = models.JSONField(verbose_name="요일별 영업/브레이크 타임", blank=True, null=True)
 
     #가게 링크
     kakao_url = models.URLField(verbose_name="카카오맵 링크", blank=True, null=True)
