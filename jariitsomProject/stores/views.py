@@ -1,3 +1,4 @@
+import math
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -11,6 +12,7 @@ from rest_framework import filters
 from .apis import get_places
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
+from .utils import haversine
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -23,7 +25,10 @@ class StoreViewSet(ModelViewSet):
 
     def get_queryset(self):
         queryset = Store.objects.all() # 여기에 한 번 더 선언 해줘야 됨
+        
         category = self.request.query_params.get('category')
+        user_lat = self.request.query_params.get('user_lat')
+        user_lng = self.request.query_params.get('user_lng')
         bookmarked = self.request.query_params.get('bookmarked')
 
         if category is not None:
@@ -31,6 +36,15 @@ class StoreViewSet(ModelViewSet):
             # 왼쪽 카테고리는 필드 이름(인자명), 오른쪽 카테고리는 쿼리스트링에서 받아온 값(변수)
             # 변수명 헷갈리면 바꾸기
             # 조건이 대체 되는 게 아닌 누적 되는 식으로 작동함
+
+        # 사용자의 현재 위치 파라미터가 있을 때만 거리 계산/정렬
+        if user_lat and user_lng:
+            user_lat, user_lng = float(user_lat), float(user_lng)
+            for store in queryset:
+                store._user_distance = haversine(user_lat, user_lng, store.latitude, store.longitude)
+            ordering = self.request.query_params.get('ordering')
+            if ordering == 'distance':
+                queryset = sorted(queryset, key=lambda s: getattr(s, '_user_distance', 1e10))
 
         if bookmarked == 'true':
             queryset = queryset.filter(bookmarked_by__user=self.request.user)
@@ -49,6 +63,12 @@ class StoreViewSet(ModelViewSet):
         )
 
         return queryset
+    
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['user_lat'] = self.request.query_params.get('user_lat')
+        context['user_lng'] = self.request.query_params.get('user_lng')
+        return context
     
     # 필터(filters.~ 따로 선언하면 덮어씌워짐)
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]

@@ -3,6 +3,7 @@ from django.core.management.base import BaseCommand
 from stores.models import Store
 from stores.apis import get_places, map_kakao_category
 from dotenv import load_dotenv
+from stores.utils import haversine
 
 load_dotenv()
 
@@ -43,7 +44,6 @@ class Command(BaseCommand):
                     # 위도, 경도 float 변환
                     place_lat = float(p['y'])
                     place_lng = float(p['x'])
-                    distance = int(p.get('distance', 0))
                     address = p.get('road_address_name') or p.get('address_name') or ''
 
                     # 중복 확인: 이름 + 위도 + 경도 조합
@@ -59,17 +59,20 @@ class Command(BaseCommand):
                             'photo': None,     # 추후 크롤링으로 추가
                         }
                     )
-                    updated = False
+                    # LOCATION_CONFIG 기반으로 '정문', '후문' 거리 모두 계산해서 넣기!
+                    main_gate_info = LOCATION_CONFIG['정문']
+                    back_gate_info = LOCATION_CONFIG['후문']
 
-                    # 중심점에 따라 거리 정보 업데이트
-                    if field == 'main_gate_distance':
-                        if store.main_gate_distance == 0 or distance < store.main_gate_distance or created:
-                            store.main_gate_distance = distance
-                            updated = True
-                    elif field == 'back_gate_distance':
-                        if store.back_gate_distance == 0 or distance < store.back_gate_distance or created:
-                            store.back_gate_distance = distance
-                            updated = True
+                    main_dist = haversine(main_gate_info['lat'], main_gate_info['lng'], place_lat, place_lng)
+                    back_dist = haversine(back_gate_info['lat'], back_gate_info['lng'], place_lat, place_lng)
+
+                    updated = False
+                    if store.main_gate_distance == 0 or main_dist < store.main_gate_distance or created:
+                        store.main_gate_distance = main_dist
+                        updated = True
+                    if store.back_gate_distance == 0 or back_dist < store.back_gate_distance or created:
+                        store.back_gate_distance = back_dist
+                        updated = True
 
                     if updated:
                         store.save()
