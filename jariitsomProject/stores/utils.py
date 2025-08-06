@@ -13,6 +13,7 @@ def haversine(lat1, lng1, lat2, lng2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return int(R * c)
 
+WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 def crawl_kakao_full_info_selenium(kakao_url):
     chrome_options = Options()
     chrome_options.add_argument('--headless')  # 창 띄우기 싫으면
@@ -20,7 +21,7 @@ def crawl_kakao_full_info_selenium(kakao_url):
     chrome_options.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=chrome_options)
     driver.get(kakao_url)
-    time.sleep(2.5)  # JS 렌더링 대기 (네트워크 따라 2~4초로 조절)
+    time.sleep(2.0)  # JS 렌더링 대기 (네트워크 따라 2~4초로 조절)
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
 
@@ -47,7 +48,10 @@ def crawl_kakao_full_info_selenium(kakao_url):
         day_tag = line.find('span', class_='tit_fold')
         if not day_tag:
             continue
-        day = day_tag.text.strip()
+        day_text = day_tag.text.strip()
+        day = day_text[0] if day_text[0] in WEEKDAYS else None
+        if not day:
+            continue
         time_tags = line.select('div.detail_fold > span.txt_detail')
         open_close, breaktime = None, None
         for t in time_tags:
@@ -62,10 +66,24 @@ def crawl_kakao_full_info_selenium(kakao_url):
             'open_close': open_close,
             'breaktime': breaktime
         }
+    # 월화수목금토일 순서로 재정렬
+    business_hours = {day: business_hours.get(day, None) for day in WEEKDAYS}
+
+    # 4. 상위 5개 메뉴 이름, 가격
+    menus = []
+    menu_items = soup.select('ul.list_goods > li')
+    for li in menu_items[:5]:  # 상위 5개만
+        name_tag = li.find('strong', class_='tit_item')
+        price_tag = li.find('p', class_='desc_item')
+        name = name_tag.text.strip() if name_tag else None
+        price = price_tag.text.strip() if price_tag else None
+        if name and price:
+            menus.append({'name': name, 'price': price})
 
     driver.quit()
     return {
         'rating': rating,
         'photo_url': photo_url,
-        'business_hours': business_hours
+        'business_hours': business_hours,
+        'menus': menus
     }
