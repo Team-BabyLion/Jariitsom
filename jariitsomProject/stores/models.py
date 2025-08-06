@@ -6,15 +6,16 @@ class Store(models.Model) :
     #리스트[] & 튜플(), choices는 튜플 또는 튜플 리스트만 허용
     CATEGORY_CHOICES = [
         #'DB에 저장될 값', '사용자에게 보여줄 이름'
-        ('restaurant', '음식점'),
-        ('cafe', '카페/디저트'),
-    ]
-    SUBCATEGORY_CHOICES = [
+        ('cafe', '카페,디저트'),
         ('korean', '한식'),
-        ('snack', '분식'),
+        ('chinese', '중식'),
         ('japanese', '일식'),
         ('fastfood', '패스트푸드'),
-        ('salad', '샐러드'),
+        ('bunsik', '분식'),
+        ('healthy', '건강식'),
+        ('western', '양식'),
+        ('bbq', '고깃집'),
+        ('bar', '주점'),
     ]
 
     CONGESTION_CHOICES = [
@@ -24,11 +25,9 @@ class Store(models.Model) :
     ]
 
     #필터링을 위한 카테고리
-    category = models.CharField(verbose_name="카테고리", max_length=20, choices=CATEGORY_CHOICES)
-    subcategory = models.CharField(verbose_name="음식 종류", max_length=20, choices=SUBCATEGORY_CHOICES, blank=True, null=True)
+    category = models.CharField(verbose_name="카테고리", max_length=20, choices=CATEGORY_CHOICES, blank=True, null=True)
     
-    photo = models.ImageField(verbose_name="가게 이미지", 
-                              blank=True, null=True, upload_to='store_photo')
+    photo = models.URLField(verbose_name="가게 이미지", blank=True, null=True)
     name = models.CharField(verbose_name="가게 이름", max_length=100)
     rating = models.FloatField(verbose_name="별점", default=0.0)
     
@@ -36,38 +35,26 @@ class Store(models.Model) :
     address = models.CharField(verbose_name="주소", max_length=200)
     latitude = models.FloatField(verbose_name="위도")
     longitude = models.FloatField(verbose_name="경도")
+
+    main_gate_distance = models.IntegerField(default=0)  # 정문까지 거리(m)
+    back_gate_distance = models.IntegerField(default=0)  # 후문까지 거리(m)
     
     #혼잡도
     congestion = models.CharField(verbose_name="혼잡도", max_length=10, choices=CONGESTION_CHOICES, default='low')
     current_customers = models.IntegerField(verbose_name="현재 손님 수", default=0)
     max_customers = models.IntegerField(verbose_name="최대 수용 인원", default=0)
 
-    #영업 시간
-    open_time = models.TimeField(verbose_name="영업 시작 시간", blank=True, null=True)
-    close_time = models.TimeField(verbose_name="영업 종료 시간", blank=True, null=True)
-    break_start_time = models.TimeField(verbose_name="브레이크타임 시작 시간", blank=True, null=True)
-    break_end_time = models.TimeField(verbose_name="브레이크타임 종료 시간", blank=True, null=True)
-
-    def is_open_now(self):
-        now = timezone.localtime().time()
-        # timezone.now() → 현재 시간을 반환, timezone.localtime() → 로컬 시간으로 바꿔줌
-        # 내부적으로 timezone.now() 호출: timezone.localtime(timezone.now()).time()
-        # 현재 시간(.localtime)을 얻고, 시간 부분만 분리(.time)
-        if self.open_time and self.close_time: 
-            return self.open_time <= now <= self.close_time
-            # 지금이 영업 시간 범위에 포함되는지 True, False 반환
-        return False
-
-    def is_breaktime_now(self):
-        now = timezone.localtime().time()
-        if self.break_start_time and self.break_end_time:
-            return self.break_start_time <= now <= self.break_end_time
-        return False
+    #영업 시간, 브레이크 타임
+    business_hours = models.JSONField(verbose_name="요일별 영업/브레이크 타임", blank=True, null=True)
 
     #가게 링크
-    naver_url = models.URLField(verbose_name="가게 네이버 링크", blank=True, null=True)
+    kakao_url = models.URLField(verbose_name="카카오맵 링크", blank=True, null=True)
 
-    created_at = models.DateTimeField(verbose_name="등록일", auto_now_add=True)
+    #대표 메뉴 리스트
+    menus = models.JSONField(verbose_name="대표 메뉴", blank=True, null=True)
+    
+    #### 각 가게마다 갖고 있는 무드 확인 가능 한 태그
+    mood_tags = models.JSONField(verbose_name="분위기 태그", blank=True, null=True)
     
     def __str__(self):
         return self.name

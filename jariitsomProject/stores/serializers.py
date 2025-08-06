@@ -1,41 +1,63 @@
 from rest_framework import serializers
 from .models import Store, Bookmark, VisitLog
 
+def walk_minutes(distance):
+    if distance is not None:
+        return int(distance / 67) + 1
+    return None
+
 class StoreSerializer(serializers.ModelSerializer): 
-    # 현재 시간에 따라 값이 입력되는 is_open, is_breaktime 필드
     # SerializerMethodField(): 읽기 전용 필드, 직렬화 시에 동적으로 계산된 값을 넣고 싶을 때 사용
-    is_open = serializers.SerializerMethodField()
-    is_breaktime = serializers.SerializerMethodField()
     is_bookmarked = serializers.SerializerMethodField()
+
+    user_distance = serializers.SerializerMethodField()
+    user_walk_minutes = serializers.SerializerMethodField()
+    main_gate_walk_minutes = serializers.SerializerMethodField()
+    back_gate_walk_minutes = serializers.SerializerMethodField()
 
     # 필드 선언하면 직렬화 할 때 이 메소드를 자동으로 호출
     # 이름 규칙: get_필드명
-    def get_is_open(self, obj):
-        return obj.is_open_now()
-
-    def get_is_breaktime(self, obj):
-        return obj.is_breaktime_now()
-    
     def get_is_bookmarked(self, obj):
-        user = self.context['request'].user
-        return Bookmark.objects.filter(user=user, store=obj).exists()
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            return Bookmark.objects.filter(user=user, store=obj).exists()
+        return False
+    
+    def get_user_distance(self, obj):
+        # views.py get_queryset에서 계산해서 붙여줌
+        return getattr(obj, '_user_distance', None)
+
+    def get_user_walk_minutes(self, obj):
+        distance = self.get_user_distance(obj)
+        return walk_minutes(distance)
+
+    def get_main_gate_walk_minutes(self, obj):
+        return int(obj.main_gate_distance / 80) + 1 if obj.main_gate_distance else None
+
+    def get_back_gate_walk_minutes(self, obj):
+        return int(obj.back_gate_distance / 80) + 1 if obj.back_gate_distance else None
 
     class Meta:
         model = Store
-        fields = [ 'id', 'category', 'subcategory', 'photo', 'name', 
-                  'rating', 'address', 'latitude', 'longitude', 
+        fields = [ 'id', 'category', 'photo', 'name', 'rating', 'address', 
+                  'latitude', 'longitude', 'main_gate_distance', 'back_gate_distance',
+                  'user_distance', 'user_walk_minutes',
+                  'main_gate_distance', 'main_gate_walk_minutes',
+                  'back_gate_distance', 'back_gate_walk_minutes',
                   'congestion', 'current_customers', 'max_customers', 
-                  'open_time', 'close_time', 'break_start_time', 'break_end_time', 
-                  'is_open', 'is_breaktime', 'is_bookmarked', 'naver_url', 'created_at' ]
+                  'business_hours', 'is_bookmarked', 'kakao_url', 'menus',
+                  'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
+        # 프론트에도 mood_tag 전달 가능
 
 # 혼잡도 구현을 위한 혼잡도 관련 필드만 처리하는 serializer
-class StoreCongestionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Store
-        fields = ['id', 'name', 'current_customers', 'max_customers', 'congestion']
-        # 변경 불가능하게끔 그냥 읽기만 되는 필드 지정
-        read_only_fields = ['id', 'name', 'max_customers']
+# class StoreCongestionSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Store
+#         fields = ['id', 'name', 'current_customers', 'max_customers', 'congestion']
+#         # 변경 불가능하게끔 그냥 읽기만 되는 필드 지정
+#         read_only_fields = ['id', 'name', 'max_customers']
 
 # 즐겨찾기 객체 직렬화
 class BookmarkSerializer(serializers.ModelSerializer):
