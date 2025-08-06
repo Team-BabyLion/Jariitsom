@@ -13,6 +13,7 @@ def haversine(lat1, lng1, lat2, lng2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return int(R * c)
 
+WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 def crawl_kakao_full_info_selenium(kakao_url):
     chrome_options = Options()
     chrome_options.add_argument('--headless')  # 창 띄우기 싫으면
@@ -47,7 +48,10 @@ def crawl_kakao_full_info_selenium(kakao_url):
         day_tag = line.find('span', class_='tit_fold')
         if not day_tag:
             continue
-        day = day_tag.text.strip()
+        day_text = day_tag.text.strip()
+        day = day_text[0] if day_text[0] in WEEKDAYS else None
+        if not day:
+            continue
         time_tags = line.select('div.detail_fold > span.txt_detail')
         open_close, breaktime = None, None
         for t in time_tags:
@@ -62,6 +66,8 @@ def crawl_kakao_full_info_selenium(kakao_url):
             'open_close': open_close,
             'breaktime': breaktime
         }
+    # 월화수목금토일 순서로 재정렬
+    business_hours = {day: business_hours.get(day, None) for day in WEEKDAYS}
 
     driver.quit()
     return {
