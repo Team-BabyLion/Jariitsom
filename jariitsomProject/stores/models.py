@@ -52,6 +52,7 @@ class Store(models.Model) :
 
     #대표 메뉴 리스트
     menus = models.JSONField(verbose_name="대표 메뉴", blank=True, null=True)
+    menu_names = models.TextField(verbose_name="메뉴 이름", blank=True, null=True)
     
     def __str__(self):
         return self.name

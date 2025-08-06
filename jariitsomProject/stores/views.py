@@ -72,7 +72,7 @@ class StoreViewSet(ModelViewSet):
     
     # 필터(filters.~ 따로 선언하면 덮어씌워짐)
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['name', 'menus']
+    search_fields = ['name', 'menu_names']
     ordering_fields = ['rating', 'population_ratio']
     
 # 클릭할 때마다 즐겨찾기 추가, 삭제
