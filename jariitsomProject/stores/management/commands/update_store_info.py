@@ -4,8 +4,6 @@ from stores.utils import crawl_kakao_full_info_selenium
 import time
 
 class Command(BaseCommand):
-    help = "카카오맵(셀레니움)으로 별점/사진/요일별 영업/브레이크타임을 크롤링해 DB에 반영"
-
     def handle(self, *args, **options):
         stores = Store.objects.all()
         for store in stores:
@@ -28,6 +26,9 @@ class Command(BaseCommand):
                 updated = True
             if data['business_hours'] and store.business_hours != data['business_hours']:
                 store.business_hours = data['business_hours']
+                updated = True
+            if data['menus'] and store.menus != data['menus']:
+                store.menus = data['menus']
                 updated = True
 
             if updated:

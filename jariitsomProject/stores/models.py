@@ -44,11 +44,14 @@ class Store(models.Model) :
     current_customers = models.IntegerField(verbose_name="현재 손님 수", default=0)
     max_customers = models.IntegerField(verbose_name="최대 수용 인원", default=0)
 
-    #영업 시간
+    #영업 시간, 브레이크 타임
     business_hours = models.JSONField(verbose_name="요일별 영업/브레이크 타임", blank=True, null=True)
 
     #가게 링크
     kakao_url = models.URLField(verbose_name="카카오맵 링크", blank=True, null=True)
+
+    #대표 메뉴 리스트
+    menus = models.JSONField(verbose_name="대표 메뉴", blank=True, null=True)
     
     def __str__(self):
         return self.name

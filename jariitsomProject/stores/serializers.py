@@ -46,7 +46,7 @@ class StoreSerializer(serializers.ModelSerializer):
                   'main_gate_distance', 'main_gate_walk_minutes',
                   'back_gate_distance', 'back_gate_walk_minutes',
                   'congestion', 'current_customers', 'max_customers', 
-                  'business_hours', 'is_bookmarked', 'kakao_url' ]
+                  'business_hours', 'is_bookmarked', 'kakao_url', 'menus' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
 
 # 혼잡도 구현을 위한 혼잡도 관련 필드만 처리하는 serializer

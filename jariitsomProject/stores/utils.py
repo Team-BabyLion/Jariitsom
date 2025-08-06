@@ -21,7 +21,7 @@ def crawl_kakao_full_info_selenium(kakao_url):
     chrome_options.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=chrome_options)
     driver.get(kakao_url)
-    time.sleep(2.5)  # JS 렌더링 대기 (네트워크 따라 2~4초로 조절)
+    time.sleep(2.0)  # JS 렌더링 대기 (네트워크 따라 2~4초로 조절)
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
 
@@ -69,9 +69,21 @@ def crawl_kakao_full_info_selenium(kakao_url):
     # 월화수목금토일 순서로 재정렬
     business_hours = {day: business_hours.get(day, None) for day in WEEKDAYS}
 
+    # 4. 상위 5개 메뉴 이름, 가격
+    menus = []
+    menu_items = soup.select('ul.list_goods > li')
+    for li in menu_items[:5]:  # 상위 5개만
+        name_tag = li.find('strong', class_='tit_item')
+        price_tag = li.find('p', class_='desc_item')
+        name = name_tag.text.strip() if name_tag else None
+        price = price_tag.text.strip() if price_tag else None
+        if name and price:
+            menus.append({'name': name, 'price': price})
+
     driver.quit()
     return {
         'rating': rating,
         'photo_url': photo_url,
-        'business_hours': business_hours
+        'business_hours': business_hours,
+        'menus': menus
     }
