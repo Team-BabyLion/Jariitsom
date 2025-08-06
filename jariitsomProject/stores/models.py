@@ -53,6 +53,9 @@ class Store(models.Model) :
     #대표 메뉴 리스트
     menus = models.JSONField(verbose_name="대표 메뉴", blank=True, null=True)
     
+    #### 각 가게마다 갖고 있는 무드 확인 가능 한 태그
+    mood_tags = models.JSONField(verbose_name="분위기 태그", blank=True, null=True)
+    
     def __str__(self):
         return self.name
 

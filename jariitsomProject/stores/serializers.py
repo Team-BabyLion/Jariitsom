@@ -46,16 +46,18 @@ class StoreSerializer(serializers.ModelSerializer):
                   'main_gate_distance', 'main_gate_walk_minutes',
                   'back_gate_distance', 'back_gate_walk_minutes',
                   'congestion', 'current_customers', 'max_customers', 
-                  'business_hours', 'is_bookmarked', 'kakao_url', 'menus' ]
+                  'business_hours', 'is_bookmarked', 'kakao_url', 'menus',
+                  'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
+        # 프론트에도 mood_tag 전달 가능
 
 # 혼잡도 구현을 위한 혼잡도 관련 필드만 처리하는 serializer
-class StoreCongestionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Store
-        fields = ['id', 'name', 'current_customers', 'max_customers', 'congestion']
-        # 변경 불가능하게끔 그냥 읽기만 되는 필드 지정
-        read_only_fields = ['id', 'name', 'max_customers']
+# class StoreCongestionSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Store
+#         fields = ['id', 'name', 'current_customers', 'max_customers', 'congestion']
+#         # 변경 불가능하게끔 그냥 읽기만 되는 필드 지정
+#         read_only_fields = ['id', 'name', 'max_customers']
 
 # 즐겨찾기 객체 직렬화
 class BookmarkSerializer(serializers.ModelSerializer):
