@@ -12,6 +12,11 @@
 8. python accounts/scripts/create_social_apps.py
 
 ---
+## 크롤러 개발환경(셀레니움) 사용을 위해 드라이버 설치
+- 본인의 크롬 브라우저 버전에 맞는 크롬 드라이버(https://chromedriver.chromium.org/downloads) 다운로드
+- 다운로드한 폴더의 압축을 해제하고 chromedriver(.exe)를 프로젝트 폴더에 복사(manage.py와 같은 위치)
+
+---
 ## git 협업 방법
 - 개발은 팀 레포의 develop 브랜치에서 진행(PR 여기로)
 - 제출 전 main으로 merge
@@ -21,6 +26,8 @@
 #### 로컬에서 작업한 후
 - 설치 패키지가 추가된 경우
   - pip freeze > requirements.txt(프로젝트 폴더 내에서)
+- 가게 정보가 변경되었을 경우
+  - python manage.py fetch_kakao_places
 2. git status(변경사항 확인, 필수 x)
 3. git add .
 4. git commit -m "커밋 메시지"
