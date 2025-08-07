@@ -36,17 +36,19 @@ class StoreViewSet(ModelViewSet):
         if category is not None:
             queryset = queryset.filter(category=category)
             # 왼쪽 카테고리는 필드 이름(인자명), 오른쪽 카테고리는 쿼리스트링에서 받아온 값(변수)
-            # 변수명 헷갈리면 바꾸기
             # 조건이 대체 되는 게 아닌 누적 되는 식으로 작동함
 
         # 사용자의 현재 위치 파라미터가 있을 때만 거리 계산/정렬
         if user_lat and user_lng:
+            # 사용자의 현재 위치와 가게 거리 계산
             user_lat, user_lng = float(user_lat), float(user_lng)
             for store in queryset:
                 store._user_distance = haversine(user_lat, user_lng, store.latitude, store.longitude)
+            # 쿼리스트링에 ordering=distance가 있을 때 가까운 순으로 정렬해서 응답
             ordering = self.request.query_params.get('ordering')
             if ordering == 'distance':
-                queryset = sorted(queryset, key=lambda s: getattr(s, '_user_distance', 1e10))
+                # 만약 _user_distance 속성이 없으면 맨 뒤로 가도록 함
+                queryset = sorted(queryset, key=lambda s: getattr(s, '_user_distance', 99999))
 
         if bookmarked == 'true':
             queryset = queryset.filter(bookmarked_by__user=self.request.user)

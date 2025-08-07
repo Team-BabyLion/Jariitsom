@@ -1,9 +1,10 @@
 from rest_framework import serializers
 from .models import Store, Bookmark, VisitLog
 
+# 거리에 따른 도보 시간 계산 함수
 def walk_minutes(distance):
     if distance is not None:
-        return int(distance / 67) + 1
+        return int(distance / 67) + 1 # 직선 거리임을 고려 -> 1분 추가
     return None
 
 class StoreSerializer(serializers.ModelSerializer): 
@@ -33,10 +34,12 @@ class StoreSerializer(serializers.ModelSerializer):
         return walk_minutes(distance)
 
     def get_main_gate_walk_minutes(self, obj):
-        return int(obj.main_gate_distance / 80) + 1 if obj.main_gate_distance else None
+        distance = obj.main_gate_distance
+        return walk_minutes(distance)
 
     def get_back_gate_walk_minutes(self, obj):
-        return int(obj.back_gate_distance / 80) + 1 if obj.back_gate_distance else None
+        distance = obj.back_gate_distance
+        return walk_minutes(distance)
 
     class Meta:
         model = Store
@@ -50,14 +53,6 @@ class StoreSerializer(serializers.ModelSerializer):
                   'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
         # 프론트에도 mood_tag 전달 가능
-
-# 혼잡도 구현을 위한 혼잡도 관련 필드만 처리하는 serializer
-# class StoreCongestionSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Store
-#         fields = ['id', 'name', 'current_customers', 'max_customers', 'congestion']
-#         # 변경 불가능하게끔 그냥 읽기만 되는 필드 지정
-#         read_only_fields = ['id', 'name', 'max_customers']
 
 # 즐겨찾기 객체 직렬화
 class BookmarkSerializer(serializers.ModelSerializer):
