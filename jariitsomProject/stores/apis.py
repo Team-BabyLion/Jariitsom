@@ -1,11 +1,8 @@
-import os
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
+from django.conf import settings
 
 # 카카오 로컬 api 사용
-KAKAO_API_KEY = os.getenv('KAKAO_REST_API_KEY')
+KAKAO_API_KEY = settings.KAKAO_REST_API_KEY
 
 # 동덕여대 위경도
 lat = 37.606372
