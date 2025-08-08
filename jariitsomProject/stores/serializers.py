@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils import timezone
 from .models import Store, Bookmark, VisitLog
 
 # 거리에 따른 도보 시간 계산 함수
@@ -6,6 +7,8 @@ def walk_minutes(distance):
     if distance is not None:
         return int(distance / 67) + 1 # 직선 거리임을 고려 -> 1분 추가
     return None
+
+WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 
 class StoreSerializer(serializers.ModelSerializer): 
     # SerializerMethodField(): 읽기 전용 필드, 직렬화 시에 동적으로 계산된 값을 넣고 싶을 때 사용
@@ -16,6 +19,9 @@ class StoreSerializer(serializers.ModelSerializer):
     main_gate_walk_minutes = serializers.SerializerMethodField()
     back_gate_walk_minutes = serializers.SerializerMethodField()
 
+    google_current_percent = serializers.SerializerMethodField()
+    google_current_level = serializers.SerializerMethodField()
+
     # 필드 선언하면 직렬화 할 때 이 메소드를 자동으로 호출
     # 이름 규칙: get_필드명
     def get_is_bookmarked(self, obj):
@@ -25,6 +31,7 @@ class StoreSerializer(serializers.ModelSerializer):
             return Bookmark.objects.filter(user=user, store=obj).exists()
         return False
     
+    # 거리, 도보 시간
     def get_user_distance(self, obj):
         # views.py get_queryset에서 계산해서 붙여줌
         return getattr(obj, '_user_distance', None)
@@ -40,6 +47,15 @@ class StoreSerializer(serializers.ModelSerializer):
     def get_back_gate_walk_minutes(self, obj):
         distance = obj.back_gate_distance
         return walk_minutes(distance)
+    
+    # 혼잡도(구글맵 인기 시간대)
+    def get_google_current_percent(self, obj):
+        now = timezone.localtime()
+        return obj.get_google_percent(now.weekday(), now.hour)
+
+    def get_google_current_level(self, obj):
+        p = self.get_google_current_percent(obj)
+        return obj.percent_to_level(p)
 
     class Meta:
         model = Store
@@ -48,8 +64,8 @@ class StoreSerializer(serializers.ModelSerializer):
                   'user_distance', 'user_walk_minutes',
                   'main_gate_distance', 'main_gate_walk_minutes',
                   'back_gate_distance', 'back_gate_walk_minutes',
-                  'congestion', 'current_customers', 'max_customers', 
-                  'business_hours', 'is_bookmarked', 'kakao_url', 'menus',
+                  'congestion', 'google_current_percent', 'google_current_level', 
+                  'business_hours', 'is_bookmarked', 'kakao_url', 'google_url', 'menus',
                   'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
         # 프론트에도 mood_tag 전달 가능
@@ -70,8 +86,37 @@ class BookmarkSerializer(serializers.ModelSerializer):
 
 # 손님 방문 기록 직렬화
 class VisitLogSerializer(serializers.ModelSerializer):
+    when = serializers.SerializerMethodField() # 5분 전, 1시간 전, 14:01 ...
+    day_label = serializers.SerializerMethodField() # 오늘, 어제, 20xx.xx.xx(요일)
+
+    def get_when(self, obj):
+        dt = timezone.localtime(obj.created_at)
+        today = timezone.localdate()
+        # 오늘 방문 기록일 경우
+        if dt.date() == today:
+            delta = timezone.localtime() - dt
+            mins = int(delta.total_seconds() // 60)
+            if mins < 1:
+                return '방금 전'
+            if mins < 60:
+                return f'{mins}분 전'
+            hours = mins // 60
+            return f'{hours}시간 전'
+        # 오늘이 아니면 시각으로
+        return dt.strftime('%H:%M')
+
+    # 방문 후기 날짜별 라벨링
+    def get_day_label(self, obj):
+        dt = timezone.localtime(obj.created_at).date()
+        today = timezone.localdate()
+        diff = (today - dt).days
+        if diff == 0:
+            return '오늘'
+        if diff == 1:
+            return '어제'
+        return f"{dt.strftime('%Y.%m.%d')}({WEEKDAYS[dt.weekday()]})"
+
     class Meta:
         model = VisitLog
-        # visit_count => 방문객 명수, created_at => 해당 기록이 작성된 시간
-        fields = ['id', 'store', 'visit_count', 'wait_time', 'congestion', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = ['id', 'visit_count', 'wait_time', 'congestion',
+                  'created_at', 'when', 'day_label']
