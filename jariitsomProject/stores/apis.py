@@ -1,34 +1,71 @@
 import os
 import requests
+import google.generativeai as genai ### gemini 사용하기 위해 import
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # 카카오 로컬 api 사용
-KAKAO_API_KEY = os.getenv('KAKAO_REST_API_KEY')
+KAKAO_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 
-# 동덕여대 위경도
+# GEMINI API 사용
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+model = genai.GenerativeModel("gemini-pro")
+
+def get_gemini_conditions(user_input):
+    prompt = f"""
+    사용자의 장소 추천 요청에서 다음 세 가지 정보를 추출해서 JSON으로 응답해 줘.
+
+    1. mood: 사용자가 원하는 분위기 (예: "조용한", "감성적인", "활기찬" 등 자연어 그대로)
+    2. congestion: 혼잡도. 반드시 다음 3개 중 하나로 응답해 → "low", "medium", "high"
+    3. category: 장소의 카테고리. 아래 중 하나로만 응답해:
+       ["cafe", "korean", "chinese", "japanese", "fastfood", "bunsik", "healthy", "western", "bbq", "bar"]
+
+    JSON 외에는 아무 말도 하지 마.
+
+    예시:
+    입력: 조용하고 감성적인 분위기의 카페 추천해줘. 너무 붐비는 곳은 싫어.
+    출력: {{"mood": "조용한", "congestion": "medium", "category": "cafe"}}
+
+    입력: {user_input}
+    출력:
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return None
+
+# 동덕여대 위경도(이 근방 가게만 탐색)
 lat = 37.606372
 lng = 127.041772
 
+# 장소 검색 함수 정의
 def get_places(category_code, query='', radius=1000, lat=lat, lng=lng):
+    # 카카오맵 카테고리 검색 api 엔드포인트
+    # 엔드포인트: 외부에서 접속할 수 있는 api url, 여기서 정보 받아옴
     url = 'https://dapi.kakao.com/v2/local/search/category.json'
     headers = {'Authorization': f'KakaoAK {KAKAO_API_KEY}'}
+    # api 호출에 필요한 쿼리 파라미터 세팅
     params = {
         'category_group_code': category_code,
         'x': lng,   # 경도
         'y': lat,   # 위도
-        'radius': radius,   # 2km = 도보 30분
+        'radius': radius,
         'size': 15, # 한 페이지 최대 15개(카카오 제한)
-        'page': 1,
-        'sort': 'distance'
+        'page': 1, # 시작 페이지
+        'sort': 'distance' # 가까운 거리순 정렬
     }
 
     places = []
     while True:
-        res = requests.get(url, headers=headers, params=params)
-        data = res.json()
-        places += data['documents']
+        res = requests.get(url, headers=headers, params=params) # 카카오 api 호출
+        data = res.json() # json 변환
+        places += data['documents'] # 'documents'에 가게 정보 리스트 넣음
 
         # 마지막 페이지까지 반복
         if len(data['documents']) < params['size']:

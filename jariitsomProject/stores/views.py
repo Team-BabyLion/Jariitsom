@@ -1,79 +1,94 @@
-import math
-from django.shortcuts import render
+import json
 from rest_framework.decorators import api_view
+from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Store, Bookmark, VisitLog
 from .serializers import VisitLogSerializer, BookmarkSerializer
-from .serializers import StoreSerializer, StoreCongestionSerializer
+from .serializers import StoreSerializer
 from rest_framework.viewsets import ModelViewSet
-from django.db.models import F, Case, When, Value
 from rest_framework import filters
-from .apis import get_places
+from .apis import get_gemini_conditions
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from .utils import haversine
+from stores.management.commands.crawl_kakao_reviews import extract_review_keywords
+from collections import defaultdict
+from datetime import datetime, timedelta
+from django.utils import timezone
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
     serializer_class = StoreSerializer
 
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'menu_names']
+    ordering_fields = ['rating']
+
+    # 시리얼라이저에 추가 컨텍스트 전달
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context['request'] = self.request  # context에 request를 추가함
+        context['request'] = self.request
+        context['user_lat'] = self.request.query_params.get('user_lat')
+        context['user_lng'] = self.request.query_params.get('user_lng')
         return context
 
     def get_queryset(self):
         queryset = Store.objects.all() # 여기에 한 번 더 선언 해줘야 됨
-        
         category = self.request.query_params.get('category')
-        user_lat = self.request.query_params.get('user_lat')
-        user_lng = self.request.query_params.get('user_lng')
         bookmarked = self.request.query_params.get('bookmarked')
 
         if category is not None:
             queryset = queryset.filter(category=category)
             # 왼쪽 카테고리는 필드 이름(인자명), 오른쪽 카테고리는 쿼리스트링에서 받아온 값(변수)
-            # 변수명 헷갈리면 바꾸기
             # 조건이 대체 되는 게 아닌 누적 되는 식으로 작동함
-
-        # 사용자의 현재 위치 파라미터가 있을 때만 거리 계산/정렬
-        if user_lat and user_lng:
-            user_lat, user_lng = float(user_lat), float(user_lng)
-            for store in queryset:
-                store._user_distance = haversine(user_lat, user_lng, store.latitude, store.longitude)
-            ordering = self.request.query_params.get('ordering')
-            if ordering == 'distance':
-                queryset = sorted(queryset, key=lambda s: getattr(s, '_user_distance', 1e10))
 
         if bookmarked == 'true':
             queryset = queryset.filter(bookmarked_by__user=self.request.user)
             # 이 store를 즐겨찾기한 사용자 중 현재 로그인한 사용자가 있는지 역참조
 
-        # 여유로운순 정렬을 위한 인구 비율 계산
-        # .annotate(): 기존 Store 객체들 각각에 새 필드(population_ratio)를 붙이는 역할
-        queryset = queryset.annotate(
-            # annotate 안은 Django ORM의 SQL 연산 표현식 공간 -> if문 못 씀 -> Case, When 사용
-            population_ratio = Case(
-                # 0 나눗셈 방지용 -> 만약 최대 수용 인원이 0일 때 혼잡도 최대(1.0)으로 둠
-                When(max_customers = 0, then = Value(1.0)),
-                # F(): 모델 필드를 참조하는 객체, * 1.0은 정수 나눗셈 방지용
-                default = F('current_customers') * 1.0 / F('max_customers')
-            )
-        )
-
         return queryset
     
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context['user_lat'] = self.request.query_params.get('user_lat')
-        context['user_lng'] = self.request.query_params.get('user_lng')
-        return context
-    
-    # 필터(filters.~ 따로 선언하면 덮어씌워짐)
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['name', 'menus']
-    ordering_fields = ['rating', 'population_ratio']
+    # 정렬 커스터마이징
+    def list(self, request, *args, **kwargs):
+        qs = self.filter_queryset(self.get_queryset())
+
+        # distance, relaxed, rating 등 정렬 모드 읽기
+        ordering = request.query_params.get('ordering')
+        user_lat = request.query_params.get('user_lat')
+        user_lng = request.query_params.get('user_lng')
+
+        # 커스텀 정렬을 위해 쿼리셋을 리스트로 변환
+        items = list(qs)
+        if ordering in ('distance', 'relaxed'):
+            # 사용자의 현재 위치와 거리 계산
+            if user_lat and user_lng:
+                ulat, ulng = float(user_lat), float(user_lng)
+                for s in items:
+                    s._user_distance = haversine(ulat, ulng, s.latitude, s.longitude)
+
+            if ordering == 'distance': # 거리순 정렬
+                # 거리가 없다면 무한대로 취급 -> 가장 뒤로 감
+                items.sort(key=lambda s: getattr(s, '_user_distance', float('inf')))
+            else:  # 여유로운 순 정렬
+                now = timezone.localtime()
+                w, h = now.weekday(), now.hour
+                rank_map = {'low': 0, 'medium': 1, 'high': 2} # 여유로울 수록 작은 숫자
+                for s in items:
+                    p = s.get_google_percent(w, h) # 인기 시간대 퍼센트 가져옴
+                    level = s.percent_to_level(p)
+                    s._rank = rank_map.get(level, 3) # 혼잡도 없으면 3 -> 가장 뒤로 감
+                # 혼잡도가 같은 시 id(기본)순 정렬
+                items.sort(key=lambda s: (getattr(s, '_rank', 3), s.id))
+
+        # 무한 스크롤을 위한 서버 슬라이싱
+        limit = int(request.query_params.get('limit', 50))
+        offset = int(request.query_params.get('offset', 0))
+        sliced = items[offset:offset + limit]
+
+        # 슬라이싱 한 것들을 시리얼라이즈
+        serializer = self.get_serializer(sliced, many=True)
+        return Response(serializer.data)
     
 # 클릭할 때마다 즐겨찾기 추가, 삭제
 @api_view(['POST'])
@@ -99,7 +114,7 @@ def list_bookmarks(request):
     serializer = BookmarkSerializer(bookmarks, many=True, context={'request':request})
     return Response(serializer.data)
 
-# 손님 방문 기록 작성하기
+# 손님 방문 기록 작성
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_visit_log(request, store_id):
@@ -108,94 +123,119 @@ def create_visit_log(request, store_id):
     except Store.DoesNotExist:
         return Response({'error': '가게 정보를 찾을 수 없습니다.'}, status=404)
 
-    data = request.data.copy()
-    data['store'] = store.id
-    serializer = VisitLogSerializer(data=data)
+    serializer = VisitLogSerializer(data=request.data)
     if serializer.is_valid():
-        serializer.save(user=request.user)
+        serializer.save(user=request.user, store=store)
         return Response(serializer.data, status=201)
     return Response(serializer.errors, status=400)
 
-# 손님 방문 기록 조회 (가장 최근 방문 정보 1건)
+# 손님 방문 기록 조회: GET ~/visitlogs/list/?expand=true&days=7&limit_per_day=50
 @api_view(['GET'])
-def get_latest_visit_log(request, store_id):
+def get_visit_logs(request, store_id):
+    expand = request.GET.get('expand', 'false').lower() == 'true' # true면 오늘+과거 n일까지(더보기 클릭)
+    days = int(request.GET.get('days', 7)) # 과거 며칠 포함(기본 7)
+    limit_per_day = int(request.GET.get('limit_per_day', 50)) # 하루 섹션당 최대 개수
+
+    now = timezone.localtime()
+    today = now.date()
+    start_today = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+    start_tomorrow = start_today + timedelta(days=1)
+
+    # expand 범위만큼 잘라서 가져오기
+    start_range = start_today if not expand else (start_today - timedelta(days=days))
+    qs = (VisitLog.objects
+          .filter(store_id=store_id, created_at__gte=start_range, created_at__lt=start_tomorrow)
+          .order_by('-created_at'))
+
+    # 날짜별 딕셔너리(키: 날짜, 값: 로그 리스트)
+    buckets = defaultdict(list)
+    for log in qs:
+        d = timezone.localtime(log.created_at).date()
+        buckets[d].append(log)
+
+    # 섹션 순서: 오늘 -> 어제 -> ... 날짜 내림차순
+    ordered_days = [today] if not expand else [today] + [today - timedelta(days=i) for i in range(1, days+1)]
+
+    groups = [] # 섹션 리스트, 각각{label, items}
+    for day in ordered_days:
+        items = buckets.get(day, [])
+        if not items:
+            continue
+        ser = VisitLogSerializer(items[:limit_per_day], many=True)
+        # 섹션 라벨은 각 아이템의 day_label을 그대로 사용 (모두 동일)
+        label = ser.data[0]['day_label'] if ser.data else '오늘'
+        groups.append({'label': label, 'items': ser.data})
+
+    return Response({'expanded': expand, 'groups': groups})
+
+# 챗봇 가게 추천 api
+class RecommendStoreView(APIView):
+    def post(self, request):
+        user_input = request.data.get('message', '')
+        if not user_input:
+            return Response({"error": "입력값이 없습니다."}, status=status.HTTP_400_BAD_REQUEST)
+
+        gemini_response = get_gemini_conditions(user_input)
+        if gemini_response is None:
+            return Response({"error": "Gemini API 호출 실패"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            parsed = json.loads(gemini_response)
+            mood = parsed.get("mood")
+            congestion = parsed.get("congestion")
+            category = parsed.get("category")
+        except json.JSONDecodeError:
+            return Response({"error": f"Gemini 응답 파싱 실패: {gemini_response}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 필터링된 가게 목록
+        stores = Store.objects.filter(
+            mood_tags__contains=[mood],
+            congestion=congestion,
+            category=category
+        )
+        serializer = StoreSerializer(stores, many=True, context={'request': request})
+        return Response({"results": serializer.data}, status=status.HTTP_200_OK)
+
+### 챗봇을 시작할 때 질문하는 가이드 양식 보여주는 api
+class RecommendGuideView(APIView):
+    def get(self, request):
+        example_messages = [
+            "조용한 분위기의 감성적인 가게 추천해줘",
+            "혼잡하지 않은 한식당이 좋아요",
+            "데이트하기 좋은 장소 추천해줘",
+            "북적이지 않는 바 조용히 술 마시고 싶어요",
+            "카페인데 사람 너무 많은 건 피하고 싶어"
+        ]
+        return Response({
+            "message": "아래 예시를 참고해서 자연스럽게 입력해 주세요.",
+            "examples": example_messages
+        })
+
+### 가게 리뷰 크롤링 => 무드 태그 저장하는 api
+@api_view(['POST'])
+def update_mood_tags(request, store_id):
     try:
         store = Store.objects.get(id=store_id)
     except Store.DoesNotExist:
-        return Response({'error': '가게 정보를 찾을 수 없습니다.'}, status=404)
-
-    latest_log = store.visit_logs.order_by('-created_at').first()
-    if not latest_log:
-        return Response({'message': '아직 한번도 방문하지 않은 가게입니다.'}, status=204)
-
-    serializer = VisitLogSerializer(latest_log)
-    return Response(serializer.data, status=200)
-
-# api view를 통해 혼잡도 입력부분 구현
-### 현재 손님 수만 입력하면 알아서 혼잡도의 정도를 정해서 db에 해당 내용 저장
-# @api_view(['POST'])
-# def update_store_congestion(request, store_id):
-#     try:
-#         store = Store.objects.get(id=store_id)
-#     except Store.DoesNotExist:
-#         return Response({'error': '가게를 찾을 수 없습니다.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': '해당 가게를 찾을 수 없습니다.'}, status=404)
     
-#     # 현재 손님 수를 필수 입력 필드로 지정 -> 입력 안하면 err 생성
-#     current_customers = request.data.get('current_customers')
+    # kakao_url에서 place_id 추출
+    if not store.kakao_url or not store.kakao_url.startswith('https://place.map.kakao.com/'):
+        return Response({'error': '카카오맵 링크가 유효하지 않습니다.'}, status=400)
     
-#     # 값이 비었거나 None이면 에러
-#     if current_customers is None or str(current_customers).strip() == '':
-#         return Response({'error': 'current_customers 값이 필요합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+    place_id = store.kakao_url.split('/')[-1]
 
-#     # 정수로 변환 시도
-#     try:
-#         current_customers = int(current_customers)
-#     except ValueError:
-#         return Response({'error': 'current_customers는 정수여야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+    result = extract_review_keywords(place_id)
 
-#     # 음수 값은 허용하지 않음
-#     if current_customers < 0:
-#         return Response({'error': 'current_customers는 0 이상의 정수여야 합니다.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not result:
+        # 리뷰 없거나 오류 발생 시 기본 태그 추가
+        store.mood_tags = ["리뷰 없음"]
+        store.save()
+        return Response({'message': '리뷰 없음 태그로 저장되었습니다.'}, status=200)
 
-#     # 최대 손님 수가 입력 안되어있다면 에러 생성
-#         # 근데 이건 우리가 직접 db에 입력하는거라면 굳이 싶긴한데 그래도 넣는게 안전할 듯
-#     max_customers = store.max_customers
-#     if max_customers <= 0:
-#         return Response({'error': 'max_customers 값이 설정되어 있지 않거나 0입니다.'}, status=status.HTTP_400_BAD_REQUEST)
+    # 명사 + 형용사 중복 제거 후 최대 5개 저장
+    keywords = list(set(result['nouns'] + result['adjectives']))
+    store.mood_tags = keywords[:5] if keywords else ["리뷰 없음"]
+    store.save()
 
-#     # 현재 인원수가 최대 수용 인원보다 크다면 에러 생성
-#     if current_customers > max_customers:
-#         return Response({'error': 'current_customers가 max_customers보다 클 수 없습니다.'}, status=status.HTTP_400_BAD_REQUEST)
-
-
-#     # 혼잡도 계산
-#     ratio = current_customers / store.max_customers
-#     if ratio < 0.25:
-#         congestion = 'low'
-#     elif ratio < 0.75:
-#         congestion = 'medium'
-#     else:
-#         congestion = 'high'
-
-#     # serializer 입력용의 데이터 딕셔너리 구성
-#     data = {
-#         'current_customers': current_customers,
-#         'congestion': congestion
-#     }
-
-#     serializer = StoreCongestionSerializer(store, data=data, partial=True)
-#     if serializer.is_valid():
-#         serializer.save()
-#         return Response(serializer.data, status=status.HTTP_200_OK)
-#     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-# # 가게 혼잡도 정보 조회
-# @api_view(['GET'])
-# def get_store_congestion(request, store_id):
-#     try:
-#         store = Store.objects.get(id=store_id)
-#     except Store.DoesNotExist:
-#         return Response({'error': '가게를 찾을 수 없습니다.'}, status=404)
-
-#     serializer = StoreSerializer(store, context={'request': request})
-#     return Response(serializer.data, status=status.HTTP_200_OK)
+    return Response({'message': '무드 태그가 성공적으로 저장되었습니다.', 'mood_tags': store.mood_tags}, status=200)
