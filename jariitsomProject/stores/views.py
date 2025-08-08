@@ -15,6 +15,7 @@ from .apis import get_gemini_conditions
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from .utils import haversine
+from stores.management.commands.crawl_kakao_reviews import extract_review_keywords
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -175,3 +176,32 @@ class RecommendGuideView(APIView):
             "message": "아래 예시를 참고해서 자연스럽게 입력해 주세요.",
             "examples": example_messages
         })
+
+### 가게 리뷰 크롤링 => 무드 태그 저장하는 api
+@api_view(['POST'])
+def update_mood_tags(request, store_id):
+    try:
+        store = Store.objects.get(id=store_id)
+    except Store.DoesNotExist:
+        return Response({'error': '해당 가게를 찾을 수 없습니다.'}, status=404)
+    
+    # kakao_url에서 place_id 추출
+    if not store.kakao_url or not store.kakao_url.startswith('https://place.map.kakao.com/'):
+        return Response({'error': '카카오맵 링크가 유효하지 않습니다.'}, status=400)
+    
+    place_id = store.kakao_url.split('/')[-1]
+
+    result = extract_review_keywords(place_id)
+
+    if not result:
+        # 리뷰 없거나 오류 발생 시 기본 태그 추가
+        store.mood_tags = ["리뷰 없음"]
+        store.save()
+        return Response({'message': '리뷰 없음 태그로 저장되었습니다.'}, status=200)
+
+    # 명사 + 형용사 중복 제거 후 최대 5개 저장
+    keywords = list(set(result['nouns'] + result['adjectives']))
+    store.mood_tags = keywords[:5] if keywords else ["리뷰 없음"]
+    store.save()
+
+    return Response({'message': '무드 태그가 성공적으로 저장되었습니다.', 'mood_tags': store.mood_tags}, status=200)
