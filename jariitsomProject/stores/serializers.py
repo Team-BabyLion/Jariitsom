@@ -54,8 +54,12 @@ class StoreSerializer(serializers.ModelSerializer):
         return obj.get_google_percent(now.weekday(), now.hour)
 
     def get_google_current_level(self, obj):
-        p = self.get_google_current_percent(obj)
-        return obj.percent_to_level(p)
+        now = timezone.localtime()
+        level = obj.current_level_from_google(now)  # 현재 시각 기준 계산 
+        if level != obj.congestion:                 # 모델 필드와 다르면 저장 
+            obj.congestion = level
+            obj.save(update_fields=["congestion"])
+        return level
 
     class Meta:
         model = Store

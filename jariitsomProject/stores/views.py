@@ -14,7 +14,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from .utils import haversine
 
-from stores.management.commands.crawl_kakao_reviews import extract_review_keywords
 from collections import defaultdict
 from datetime import datetime, timedelta
 from django.utils import timezone
@@ -65,6 +64,13 @@ class StoreViewSet(ModelViewSet):
 
         # 커스텀 정렬을 위해 쿼리셋을 리스트로 변환
         items = list(qs)
+
+        # 정렬과 무관하게 좌표가 오면 거리 계산
+        if user_lat and user_lng:
+            ulat, ulng = float(user_lat), float(user_lng)
+            for s in items:
+                s._user_distance = haversine(ulat, ulng, s.latitude, s.longitude)
+
         if ordering in ('distance', 'relaxed'):
             # 사용자의 현재 위치와 거리 계산
             if user_lat and user_lng:
@@ -192,12 +198,24 @@ class RecommendStoreView(APIView):
         except json.JSONDecodeError:
             return Response({"error": f"Gemini 응답 파싱 실패: {gemini_response}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # 필터링된 가게 목록
-        stores = Store.objects.filter(
+        # (변경 1) 카테고리+무드로 1차 후보 압축 (원본 쿼리에서 congestion만 잠시 제외)
+        base_qs = Store.objects.filter(
             mood_tags__contains=[mood],
-            congestion=congestion,
             category=category
         )
+
+        # (변경 2) 후보들만 현재 시간 기준 혼잡도 계산 후 DB 필드(congestion)에 반영
+        #  - 모델에 이미 google_hourly와 현재 혼잡도 계산 메서드가 있음
+        #  - 계산 결과가 다를 때만 update로 가볍게 반영
+        now = timezone.localtime()
+        for s in base_qs.only("id", "congestion", "google_hourly"):
+            lvl = s.current_level_from_google(now=now)
+            if lvl != s.congestion:
+                Store.objects.filter(pk=s.pk).update(congestion=lvl)
+
+        # (변경 3) 원하는 혼잡도로 최종 필터 (원본 로직 유지)
+        stores = base_qs.filter(congestion=congestion)
+
         serializer = StoreSerializer(stores, many=True, context={'request': request})
         return Response({"results": serializer.data}, status=status.HTTP_200_OK)
 
