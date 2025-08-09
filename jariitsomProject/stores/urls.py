@@ -15,7 +15,7 @@ urlpatterns = [
     # 즐겨찾기
     path('bookmarks/', list_bookmarks, name='list_bookmarks'),
     path('stores/<int:store_id>/bookmark/', toggle_bookmark, name='toggle_bookmark'),
-    path('stores/<int:store_id>/update_mood_tags/', update_mood_tags, name='update_mood_tags'),
+    path('stores/<int:store_id>/refresh-mood-tags/', update_mood_tags, name='update_mood_tags'),
 
     # 손님 방문기록
     path('stores/<int:store_id>/visit/', create_visit_log, name='create_visit_log'),
