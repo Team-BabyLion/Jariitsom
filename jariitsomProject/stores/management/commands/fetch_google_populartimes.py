@@ -1,66 +1,70 @@
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 from stores.models import Store
-from stores.utils_google import crawl_popular_times_weekly_by_latlng_name
+from stores.utils_google import crawl_popular_times_weekly_by_name_address
 import time
 
 class Command(BaseCommand):
-    help = "위경도+가게명으로 구글맵 인기시간대(요일×시간) 크롤링하여 Store.google_hourly 저장"
+    help = "구글 지도 '인기 시간대' 빠른 크롤링(월요일 선택→오른쪽 화살표). 인기 섹션 없으면 즉시 스킵"
 
     def add_arguments(self, parser):
-        parser.add_argument("--recrawl", action="store_true",
-                            help="기존 google_hourly 있어도 재크롤링")
-        parser.add_argument("--sleep", type=float, default=0.7,
-                            help="가게 간 대기 시간(sec)")
-        parser.add_argument("--only-with-kakao", action="store_true",
-                            help="kakao_url 있는 가게만 처리(권장)")
+        parser.add_argument(
+            "--only-with-kakao",
+            action="store_true",
+            help="kakao_url 있는 가게만 대상",
+        )
+        parser.add_argument(
+            "--no-headless",
+            action="store_true",
+            help="브라우저 창 띄워서 실행(디버깅용)",
+        )
+        parser.add_argument(
+            "--limit",
+            type=int,
+            default=None,
+            help="처리할 최대 가게 수(디버깅용)",
+        )
+        parser.add_argument(
+            "--sleep",
+            type=float,
+            default=0.3,
+            help="가게 간 대기(초)",
+        )
 
     def handle(self, *args, **opts):
-        recrawl = opts["recrawl"]
-        delay = opts["sleep"]
-        only_with_kakao = opts["only_with_kakao"]
+        only_with_kakao = opts.get("only_with_kakao", False)
+        headless = not opts.get("no_headless", False)
+        limit = opts.get("limit")
+        sleep_sec = float(opts.get("sleep", 0.3))
 
         qs = Store.objects.all()
         if only_with_kakao:
-            qs = qs.filter(kakao_url__isnull=False)
+            qs = qs.filter(~Q(kakao_url=""), ~Q(kakao_url=None))
+        if limit:
+            qs = qs[:limit]
 
-        self.stdout.write(self.style.MIGRATE_HEADING(f"대상 가게 수: {qs.count()}"))
+        total = qs.count()
+        self.stdout.write(f"대상 가게 수: {total}")
 
-        for s in qs:
-            # 기존 데이터가 있고 재크롤링 옵션이 아니면 스킵
-            if s.google_hourly and not recrawl:
-                self.stdout.write(f"[SKIP] {s.name} 기존 google_hourly 존재")
-                time.sleep(0.15)
-                continue
-
-            # 위경도 + 가게명으로 검색 → 크롤링
-            weekly, place_url = crawl_popular_times_weekly_by_latlng_name(
-                lat=s.latitude, lng=s.longitude, name=s.name
-            )
-            if not weekly:
-                self.stdout.write(self.style.WARNING(f"[NO POPULAR] {s.name} 데이터 없음/파싱 실패"))
-                time.sleep(delay)
-                continue
-
-            # 저장
-            update_fields = []
-            if place_url and not s.google_url:
-                s.google_url = place_url
-                update_fields.append("google_url")
-
-            s.google_hourly = weekly
-            update_fields.append("google_hourly")
-
-            # 혼잡도(표기용) 갱신
+        for idx, store in enumerate(qs.iterator(), start=1):
             try:
-                s.congestion = s.current_level_from_google()
-                update_fields.append("congestion")
-            except Exception:
-                pass
+                weekly, place_url = crawl_popular_times_weekly_by_name_address(
+                    name=store.name,
+                    address=store.address,
+                    headless=headless,
+                )
+                if not weekly:
+                    self.stdout.write(self.style.WARNING(f"[SKIP] {store.name} 인기 섹션 없음/파싱 실패"))
+                    time.sleep(sleep_sec)
+                    continue
 
-            s.save(update_fields=update_fields)
+                store.google_hourly = weekly
+                if place_url:
+                    store.google_url = place_url
+                store.save(update_fields=["google_hourly", "google_url"])
+                self.stdout.write(self.style.SUCCESS(f"[OK] {store.name} 저장 완료 ({idx}/{total})"))
 
-            bars = sum(len(v) for v in weekly.values())
-            self.stdout.write(self.style.SUCCESS(f"[OK] {s.name} 저장 ({bars} bars)"))
-            time.sleep(delay)
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"[ERROR] {store.name}: {e}"))
 
-        self.stdout.write(self.style.SUCCESS("완료"))
+            time.sleep(sleep_sec)
