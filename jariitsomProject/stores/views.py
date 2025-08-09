@@ -1,9 +1,9 @@
 import json
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from rest_framework.decorators import api_view
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, permissions
 from .models import Store, Bookmark, VisitLog
 from .serializers import VisitLogSerializer, BookmarkSerializer
 from .serializers import StoreSerializer
@@ -15,7 +15,11 @@ from .apis import get_gemini_conditions
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from .utils import haversine
+
 from stores.management.commands.crawl_kakao_reviews import extract_review_keywords
+
+from .kakao_ai_crawl import crawl_kakao_ai_by_place_id, extract_place_id
+from .mood_extractor import pick_mood_tags
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -177,31 +181,49 @@ class RecommendGuideView(APIView):
             "examples": example_messages
         })
 
-### 가게 리뷰 크롤링 => 무드 태그 저장하는 api
+# 가게 리뷰(카카오 AI 요약/불릿/블로그 요약) 크롤링 → 무드 태그 저장
 @api_view(['POST'])
 def update_mood_tags(request, store_id):
-    try:
-        store = Store.objects.get(id=store_id)
-    except Store.DoesNotExist:
-        return Response({'error': '해당 가게를 찾을 수 없습니다.'}, status=404)
-    
-    # kakao_url에서 place_id 추출
-    if not store.kakao_url or not store.kakao_url.startswith('https://place.map.kakao.com/'):
-        return Response({'error': '카카오맵 링크가 유효하지 않습니다.'}, status=400)
-    
-    place_id = store.kakao_url.split('/')[-1]
+    store = get_object_or_404(Store, pk=store_id)
 
-    result = extract_review_keywords(place_id)
+    if not store.kakao_url:
+        return Response({'error': '카카오맵 링크가 없습니다.'}, status=400)
 
-    if not result:
-        # 리뷰 없거나 오류 발생 시 기본 태그 추가
-        store.mood_tags = ["리뷰 없음"]
-        store.save()
-        return Response({'message': '리뷰 없음 태그로 저장되었습니다.'}, status=200)
+    # http/https 모두 대응해서 place_id 추출
+    place_id = extract_place_id(store.kakao_url)
+    if not place_id:
+        return Response({'error': 'place_id 추출 실패'}, status=400)
 
-    # 명사 + 형용사 중복 제거 후 최대 5개 저장
-    keywords = list(set(result['nouns'] + result['adjectives']))
-    store.mood_tags = keywords[:5] if keywords else ["리뷰 없음"]
+    data = crawl_kakao_ai_by_place_id(place_id)
+    # 세 가지 중 하나라도 있으면 성공으로 간주
+    if not data or (
+        not data.get("store_summary") and
+        not data.get("ai_bullets") and
+        not data.get("blog_keywords")
+    ):
+        store.mood_tags = ["요약 없음"]
+        store.save(update_fields=["mood_tags"])
+        return Response({'message': '요약 없음 태그 저장', 'mood_tags': store.mood_tags}, status=200)
+
+    # 텍스트 합쳐서 의미기반 무드 추출
+    combined_text = " ".join(filter(None, [
+        data.get("store_summary", ""),
+        " ".join(data.get("ai_bullets", [])),
+        " ".join(data.get("blog_keywords", [])),
+    ]))
+
+    tags = pick_mood_tags(combined_text, getattr(store, "category", None), top_k=5, mode="adj")
+    store.mood_tags = tags if tags else ["무드정보부족"]
+
+    # (선택) 모델에 store_summary 필드 있다면 같이 저장
+    if hasattr(store, "store_summary"):
+        store.store_summary = data.get("store_summary", "")
+
     store.save()
-
-    return Response({'message': '무드 태그가 성공적으로 저장되었습니다.', 'mood_tags': store.mood_tags}, status=200)
+    return Response({
+        'message': '무드 태그가 업데이트되었습니다.',
+        'mood_tags': store.mood_tags,
+        'store_summary': getattr(store, "store_summary", None),
+        'ai_bullets': data.get("ai_bullets", []),
+        'blog_keywords': data.get("blog_keywords", []),
+    }, status=200)
