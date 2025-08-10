@@ -15,4 +15,9 @@ class Migration(migrations.Migration):
             name='menus',
             field=models.JSONField(blank=True, null=True, verbose_name='대표 메뉴'),
         ),
+        migrations.AddField(
+            model_name='store',
+            name='menu_names',
+            field=models.TextField(blank=True, null=True, verbose_name='메뉴 이름'),
+        ),
     ]

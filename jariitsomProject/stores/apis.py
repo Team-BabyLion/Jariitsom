@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 카카오 로컬 api 사용
-KAKAO_API_KEY = os.getenv('KAKAO_REST_API_KEY')
+KAKAO_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 
 # GEMINI API 사용
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -40,28 +40,32 @@ def get_gemini_conditions(user_input):
     except Exception as e:
         return None
 
-# 동덕여대 위경도
+# 동덕여대 위경도(이 근방 가게만 탐색)
 lat = 37.606372
 lng = 127.041772
 
+# 장소 검색 함수 정의
 def get_places(category_code, query='', radius=1000, lat=lat, lng=lng):
+    # 카카오맵 카테고리 검색 api 엔드포인트
+    # 엔드포인트: 외부에서 접속할 수 있는 api url, 여기서 정보 받아옴
     url = 'https://dapi.kakao.com/v2/local/search/category.json'
     headers = {'Authorization': f'KakaoAK {KAKAO_API_KEY}'}
+    # api 호출에 필요한 쿼리 파라미터 세팅
     params = {
         'category_group_code': category_code,
         'x': lng,   # 경도
         'y': lat,   # 위도
-        'radius': radius,   # 2km = 도보 30분
+        'radius': radius,
         'size': 15, # 한 페이지 최대 15개(카카오 제한)
-        'page': 1,
-        'sort': 'distance'
+        'page': 1, # 시작 페이지
+        'sort': 'distance' # 가까운 거리순 정렬
     }
 
     places = []
     while True:
-        res = requests.get(url, headers=headers, params=params)
-        data = res.json()
-        places += data['documents']
+        res = requests.get(url, headers=headers, params=params) # 카카오 api 호출
+        data = res.json() # json 변환
+        places += data['documents'] # 'documents'에 가게 정보 리스트 넣음
 
         # 마지막 페이지까지 반복
         if len(data['documents']) < params['size']:

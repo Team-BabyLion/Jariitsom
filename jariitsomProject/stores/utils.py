@@ -15,34 +15,35 @@ def haversine(lat1, lng1, lat2, lng2):
 
 WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 def crawl_kakao_full_info_selenium(kakao_url):
+    # 크롬 드라이버로 카카오맵 페이지 접속
     chrome_options = Options()
-    chrome_options.add_argument('--headless')  # 창 띄우기 싫으면
+    chrome_options.add_argument('--headless')  # 창 안 띄움으로 실행
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=chrome_options)
     driver.get(kakao_url)
-    time.sleep(2.0)  # JS 렌더링 대기 (네트워크 따라 2~4초로 조절)
+    time.sleep(2.0)  # JS 렌더링 대기(2~4초 내에서 조절)
 
+    # 현재 웹페이지를 BeautifulSoup로 파싱
     soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-    # 1. 별점
+    # 별점 추출
     rating = None
     star_tag = soup.find('span', class_='num_star')
     if star_tag:
-        try:
-            rating = float(star_tag.text.strip())
-        except:
-            rating = None
+        text = star_tag.text.strip() # strip: 공백, 개행 문자 등 모두 삭제
+        rating = float(text) if text else None
 
-    # 2. 대표 사진
+    # 대표 사진 url 추출
     photo_url = None
     img_tag = soup.find('img', class_='img-thumb')
     if img_tag and img_tag.has_attr('src'):
         photo_url = img_tag['src']
+        # //로 시작하면 https: 붙여서 절대 경로로 변환
         if photo_url.startswith("//"):
             photo_url = "https:" + photo_url
 
-    # 3. 요일별 영업/브레이크타임
+    # 요일별 영업/브레이크타임 추출 -> 딕셔너리로 저장
     business_hours = {}
     for line in soup.select('div.line_fold'):
         day_tag = line.find('span', class_='tit_fold')
@@ -69,7 +70,7 @@ def crawl_kakao_full_info_selenium(kakao_url):
     # 월화수목금토일 순서로 재정렬
     business_hours = {day: business_hours.get(day, None) for day in WEEKDAYS}
 
-    # 4. 상위 5개 메뉴 이름, 가격
+    # 상위 5개 메뉴 이름, 가격 추출 -> 리스트로 저장
     menus = []
     menu_items = soup.select('ul.list_goods > li')
     for li in menu_items[:5]:  # 상위 5개만
@@ -80,7 +81,8 @@ def crawl_kakao_full_info_selenium(kakao_url):
         if name and price:
             menus.append({'name': name, 'price': price})
 
-    driver.quit()
+    driver.quit() # 드라이버 종료
+    # 딕셔너리 형태로 반환
     return {
         'rating': rating,
         'photo_url': photo_url,

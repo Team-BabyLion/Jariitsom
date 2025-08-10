@@ -26,6 +26,7 @@ CATEGORY_MAP = {
 # 카카오 로컬 API 가게 정보 DB에 자동 저장, 갱신하는 커맨드
 class Command(BaseCommand):
     def handle(self, *args, **kwargs):
+        # 중심점 좌표마다 반복
         for loc_name, loc_info in LOCATION_CONFIG.items():
             lat, lng = loc_info['lat'], loc_info['lng']
             field = loc_info['field']
@@ -54,18 +55,21 @@ class Command(BaseCommand):
                         defaults={
                             'category': cat,
                             'address': address,
-                            'kakao_url': p['place_url'],
-                            'rating': 0.0,     # 추후 크롤링으로 변경
-                            'photo': None,     # 추후 크롤링으로 추가
+                            # http -> https로 저장
+                            'kakao_url': p['place_url'].replace('http://', 'https://', 1),
+                            'rating': 0.0,     # 별점 기본값 -> 크롤링으로 변경
+                            'photo': None,     # 사진 기본값 -> 크롤링으로 변경
                         }
                     )
                     # LOCATION_CONFIG 기반으로 '정문', '후문' 거리 모두 계산해서 넣기!
                     main_gate_info = LOCATION_CONFIG['정문']
                     back_gate_info = LOCATION_CONFIG['후문']
 
+                    # 해당 장소가 정문/후문에서 얼마나 떨어져 있는지 계산
                     main_dist = haversine(main_gate_info['lat'], main_gate_info['lng'], place_lat, place_lng)
                     back_dist = haversine(back_gate_info['lat'], back_gate_info['lng'], place_lat, place_lng)
 
+                    # 기존보다 더 가까운 거리거나 새로 생성되면 DB 업데이트
                     updated = False
                     if store.main_gate_distance == 0 or main_dist < store.main_gate_distance or created:
                         store.main_gate_distance = main_dist
