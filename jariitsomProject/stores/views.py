@@ -70,27 +70,22 @@ class StoreViewSet(ModelViewSet):
             ulat, ulng = float(user_lat), float(user_lng)
             for s in items:
                 s._user_distance = haversine(ulat, ulng, s.latitude, s.longitude)
+        # google_percent가 0이나 null이면 맨 뒤로
+        now = timezone.localtime()
+        w, h = now.weekday(), now.hour
+        for s in items:
+            p = s.get_google_percent(w, h)
+            s._current_percent = p if (p not in (None, 0)) else 101
 
-        if ordering in ('distance', 'relaxed'):
-            # 사용자의 현재 위치와 거리 계산
-            if user_lat and user_lng:
-                ulat, ulng = float(user_lat), float(user_lng)
-                for s in items:
-                    s._user_distance = haversine(ulat, ulng, s.latitude, s.longitude)
-
-            if ordering == 'distance': # 거리순 정렬
-                # 거리가 없다면 무한대로 취급 -> 가장 뒤로 감
-                items.sort(key=lambda s: getattr(s, '_user_distance', float('inf')))
-            else:  # 여유로운 순 정렬
-                now = timezone.localtime()
-                w, h = now.weekday(), now.hour
-                rank_map = {'low': 0, 'medium': 1, 'high': 2} # 여유로울 수록 작은 숫자
-                for s in items:
-                    p = s.get_google_percent(w, h) # 인기 시간대 퍼센트 가져옴
-                    level = s.percent_to_level(p)
-                    s._rank = rank_map.get(level, 3) # 혼잡도 없으면 3 -> 가장 뒤로 감
-                # 혼잡도가 같은 시 id(기본)순 정렬
-                items.sort(key=lambda s: (getattr(s, '_rank', 3), s.id))
+        if ordering == 'distance': # 거리순 정렬
+            # 거리가 없다면 무한대로 취급 -> 가장 뒤로 감
+            items.sort(key=lambda s: getattr(s, '_user_distance', float('inf')))
+        elif ordering == 'relaxed': # 여유로운순 정렬
+            items.sort(key=lambda s: (getattr(s, '_current_percent', 101), s.id))
+        elif ordering == 'rating': # 별점높은순 정렬
+            items.sort(key=lambda s: (-s.rating, getattr(s, '_current_percent', 101), s.id))
+        else: # 기본 정렬(id순)
+            items.sort(key=lambda s: (getattr(s, '_current_percent', 101), s.id))
 
         # 무한 스크롤을 위한 서버 슬라이싱
         limit = int(request.query_params.get('limit', 50))

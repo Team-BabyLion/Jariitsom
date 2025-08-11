@@ -68,7 +68,7 @@ class StoreSerializer(serializers.ModelSerializer):
                   'user_distance', 'user_walk_minutes',
                   'main_gate_distance', 'main_gate_walk_minutes',
                   'back_gate_distance', 'back_gate_walk_minutes',
-                  'congestion', 'google_current_percent', 'google_current_level', 
+                  'google_current_percent', 'google_current_level', 'congestion',
                   'business_hours', 'is_bookmarked', 'kakao_url', 'google_url', 'menus',
                   'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
