@@ -1,4 +1,4 @@
-# stores/kakao_ai_crawl.py
+# 절대 지우면 안됨 -> crawl_kakao_reviews 커맨드할 때 필요한 파일임
 import re, time
 from bs4 import BeautifulSoup
 from selenium import webdriver
