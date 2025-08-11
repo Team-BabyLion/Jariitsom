@@ -6,14 +6,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 카카오 로컬 api 사용
-KAKAO_API_KEY = os.getenv('KAKAO_REST_API_KEY')
+KAKAO_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 
 # GEMINI API 사용
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-model = genai.GenerativeModel("gemini-pro")
+model = genai.GenerativeModel(model_name="models/gemini-1.5-flash")
 
 def get_gemini_conditions(user_input):
     prompt = f"""
@@ -23,7 +23,7 @@ def get_gemini_conditions(user_input):
     2. congestion: 혼잡도. 반드시 다음 3개 중 하나로 응답해 → "low", "medium", "high"
     3. category: 장소의 카테고리. 아래 중 하나로만 응답해:
        ["cafe", "korean", "chinese", "japanese", "fastfood", "bunsik", "healthy", "western", "bbq", "bar"]
-
+    
     JSON 외에는 아무 말도 하지 마.
 
     예시:
@@ -40,28 +40,32 @@ def get_gemini_conditions(user_input):
     except Exception as e:
         return None
 
-# 동덕여대 위경도
+# 동덕여대 위경도(이 근방 가게만 탐색)
 lat = 37.606372
 lng = 127.041772
 
+# 장소 검색 함수 정의
 def get_places(category_code, query='', radius=1000, lat=lat, lng=lng):
+    # 카카오맵 카테고리 검색 api 엔드포인트
+    # 엔드포인트: 외부에서 접속할 수 있는 api url, 여기서 정보 받아옴
     url = 'https://dapi.kakao.com/v2/local/search/category.json'
     headers = {'Authorization': f'KakaoAK {KAKAO_API_KEY}'}
+    # api 호출에 필요한 쿼리 파라미터 세팅
     params = {
         'category_group_code': category_code,
         'x': lng,   # 경도
         'y': lat,   # 위도
-        'radius': radius,   # 2km = 도보 30분
+        'radius': radius,
         'size': 15, # 한 페이지 최대 15개(카카오 제한)
-        'page': 1,
-        'sort': 'distance'
+        'page': 1, # 시작 페이지
+        'sort': 'distance' # 가까운 거리순 정렬
     }
 
     places = []
     while True:
-        res = requests.get(url, headers=headers, params=params)
-        data = res.json()
-        places += data['documents']
+        res = requests.get(url, headers=headers, params=params) # 카카오 api 호출
+        data = res.json() # json 변환
+        places += data['documents'] # 'documents'에 가게 정보 리스트 넣음
 
         # 마지막 페이지까지 반복
         if len(data['documents']) < params['size']:
@@ -104,3 +108,50 @@ def map_kakao_category(category_name):
     if '술집' in category_name:
         return 'bar'
     return None
+
+def get_gemini_chat_reply(user_input, parsed, top1_name=None, top1_distance_m=None, top1_url=None):
+    """
+    귀여운 '...솜!' 말투로 한두 문장 한국어 답변 생성.
+    - 문장 끝은 반드시 '솜!' 또는 '솜~'로 끝내도록 강하게 지시
+    - 결과가 없을 때도 자연스럽게 안내
+    """
+    mood = (parsed or {}).get("mood") or ""
+    congestion = (parsed or {}).get("congestion") or ""
+    category = (parsed or {}).get("category") or ""
+
+    # 숫자는 너무 구체적이면 어색할 수 있어 50m 단위로 반올림
+    dist_str = None
+    if isinstance(top1_distance_m, (int, float)):
+        dist_str = f"{int(round(top1_distance_m / 50.0) * 50)}m"
+
+    # 프롬프트
+    prompt = f"""
+다음 정보를 바탕으로 사용자에게 장소 추천을 한두 문장으로 한국어로 알려주솜!
+모든 문장의 끝은 반드시 '솜!' 또는 '솜~'으로 끝내주솜!
+결과를 짧고 명확하게, 60자 이내로 말하솜!
+가능하면 추천 가게 이름은 큰따옴표로 감싸주솜!
+
+[사용자 입력]
+{user_input}
+
+[추출된 조건]
+- mood: {mood}
+- congestion: {congestion}
+- category: {category}
+
+[추천 결과 Top1]
+- name: {top1_name or ""}
+- distance: {dist_str or ""}
+- url: {top1_url or ""}
+
+[말하기 예시]
+원하는 장소를 찾고있솜! 현재 위치에서 "{top1_name or "가게"}"가 제일 가깝솜! 링크로 바로 이동해보솜~ {top1_url or ""}
+
+절대로 JSON으로 답하지 말고, 순수 문장만 한두 줄로 말해주솜!
+"""
+
+    try:
+        response = model.generate_content(prompt)
+        return (response.text or "").strip()
+    except Exception:
+        return None

@@ -1,9 +1,24 @@
 # stores/mood_extractor.py
-import re
+import re, os
 from collections import Counter
+from functools import lru_cache
 from konlpy.tag import Okt
 
-OKT = Okt()
+try:
+    # Windows: jvm.dll 의존 DLL 경로를 명시적으로 추가 (Python 3.8+)
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        bin_server = os.path.join(java_home, "bin", "server")
+        if os.path.isdir(bin_server):
+            os.add_dll_directory(bin_server)  # 존재하면 추가
+except Exception:
+    # 없거나 권한 문제면 그냥 넘어감 (다른 환경은 필요 없음)
+    pass
+
+@lru_cache(maxsize=1)
+def get_okt() -> Okt:
+    # 처음 호출될 때 한 번만 생성
+    return Okt()
 
 TOP_K = 5
 NEG_WINDOW = 5
@@ -78,7 +93,7 @@ def _score_mood_words(text: str, category: str):
     pair_candidates = Counter()
 
     for sent in _split_sentences(text):
-        morphs = OKT.pos(sent, stem=True)
+        morphs = get_okt().pos(sent, stem=True)
         toks = [w for w,_ in morphs]
 
         anchor_idx = [i for i,(w,t) in enumerate(morphs) if (t in {"Noun","Adjective"} and w in anchors)]

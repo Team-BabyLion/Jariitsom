@@ -3,7 +3,7 @@ from rest_framework.routers import SimpleRouter
 from .views import StoreViewSet
 from .views import RecommendStoreView, RecommendGuideView
 from .views import toggle_bookmark, list_bookmarks
-from .views import create_visit_log, get_latest_visit_log
+from .views import create_visit_log, get_visit_logs
 from .views import update_mood_tags
 
 store_router = SimpleRouter()
@@ -18,8 +18,8 @@ urlpatterns = [
     path('stores/<int:store_id>/refresh-mood-tags/', update_mood_tags, name='update_mood_tags'),
 
     # 손님 방문기록
-    path('stores/<int:store_id>/visit/', create_visit_log, name='create_visit_log'),
-    path('stores/<int:store_id>/visit/latest/', get_latest_visit_log, name='get_latest_visit_log'),
+    path('stores/<int:store_id>/visitlogs/', create_visit_log, name='create_visit_log'),
+    path('stores/<int:store_id>/visitlogs/list/', get_visit_logs, name='get_visit_logs'),
 
     # 챗봇 가게(카페, 음식점) 추천
     path('recommend/', RecommendStoreView.as_view(), name='recommend-store'),
