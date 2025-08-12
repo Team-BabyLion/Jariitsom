@@ -13,6 +13,7 @@ from rest_framework.decorators import permission_classes
 from .utils import haversine
 from .apis import get_gemini_conditions
 from .models import Store, Bookmark, VisitLog
+from .forecast import forecast_congestion
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -55,6 +56,7 @@ class StoreViewSet(ModelViewSet):
     
     # 정렬 커스터마이징
     def list(self, request, *args, **kwargs):
+        from .forecast import ensure_ai_congestion_now
         qs = self.filter_queryset(self.get_queryset())
 
         # distance, relaxed, rating 등 정렬 모드 읽기
@@ -70,22 +72,24 @@ class StoreViewSet(ModelViewSet):
             ulat, ulng = float(user_lat), float(user_lng)
             for s in items:
                 s._user_distance = haversine(ulat, ulng, s.latitude, s.longitude)
-        # google_percent가 0이나 null이면 맨 뒤로
-        now = timezone.localtime()
-        w, h = now.weekday(), now.hour
+
+        LEVEL_RANK = {'low': 0, 'medium': 1, 'high': 2}
+
+        # 현재 혼잡도 부여
         for s in items:
-            p = s.get_google_percent(w, h)
-            s._current_percent = p if (p not in (None, 0)) else 101
+            ai_level = ensure_ai_congestion_now(s)
+            s._ai_level = ai_level
+            s._ai_rank = LEVEL_RANK.get(ai_level, 1)
 
         if ordering == 'distance': # 거리순 정렬
             # 거리가 없다면 무한대로 취급 -> 가장 뒤로 감
             items.sort(key=lambda s: getattr(s, '_user_distance', float('inf')))
         elif ordering == 'relaxed': # 여유로운순 정렬
-            items.sort(key=lambda s: (getattr(s, '_current_percent', 101), s.id))
+            items.sort(key=lambda s: (s._ai_rank, s.id))
         elif ordering == 'rating': # 별점높은순 정렬
-            items.sort(key=lambda s: (-s.rating, getattr(s, '_current_percent', 101), s.id))
+            items.sort(key=lambda s: (-s.rating, s.id))
         else: # 기본 정렬(id순)
-            items.sort(key=lambda s: (getattr(s, '_current_percent', 101), s.id))
+            items.sort(key=lambda s: s.id)
 
         # 무한 스크롤을 위한 서버 슬라이싱
         limit = int(request.query_params.get('limit', 50))
@@ -95,6 +99,7 @@ class StoreViewSet(ModelViewSet):
         # 슬라이싱 한 것들을 시리얼라이즈
         serializer = self.get_serializer(sliced, many=True)
         return Response(serializer.data)
+
     
 # 클릭할 때마다 즐겨찾기 추가, 삭제
 @api_view(['POST'])
@@ -320,12 +325,21 @@ class RecommendStoreView(APIView):
         if req_category:
             qs = qs.filter(category=req_category)
 
-        # 3) 현재 혼잡도 반영 갱신(후보만)
+        # ============혼잡도 부분 변경됨============
+        # # 3) 현재 혼잡도 반영 갱신(후보만)
+        # now = timezone.localtime()
+        # for s in qs.only("id", "congestion", "google_hourly"):
+        #     lvl = s.current_level_from_google(now=now)
+        #     if lvl != s.congestion:
+        #         Store.objects.filter(pk=s.pk).update(congestion=lvl)
         now = timezone.localtime()
-        for s in qs.only("id", "congestion", "google_hourly"):
-            lvl = s.current_level_from_google(now=now)
-            if lvl != s.congestion:
-                Store.objects.filter(pk=s.pk).update(congestion=lvl)
+        from .forecast import ensure_ai_congestion_now  # 순환참조 방지용 로컬 임포트
+        ai_level_map = {}  # store_id -> 'low'|'medium'|'high' (예외 시 medium)
+        for s in qs.only("id", "congestion"):
+            try:
+                ai_level_map[s.id] = ensure_ai_congestion_now(s)  # 이 시점에 DB congestion도 최신화됨
+            except Exception:
+                ai_level_map[s.id] = s.congestion or "medium"
 
         # 4) 반경 필터 및 스코어링
         ranked = []
@@ -340,9 +354,22 @@ class RecommendStoreView(APIView):
             if d is not None and d > radius:
                 continue  # 반경 밖 제외
 
+            # ============혼잡도 부분 변경됨============
+            # # 무드/혼잡도/거리 점수
+            # mood_sc = _mood_overlap_score(req_moods, s.mood_tags or [])
+            # cong_sc = _congestion_compat_score(req_congestion, s.congestion)
+            # dist_sc = _distance_score(d, cutoff=radius)
+
+            # # 가중치(원하면 조절 가능)
+            # score = (mood_sc * 0.55) + (cong_sc * 0.25) + (dist_sc * 0.20)
+            # ranked.append((s, round(score, 6)))
             # 무드/혼잡도/거리 점수
             mood_sc = _mood_overlap_score(req_moods, s.mood_tags or [])
-            cong_sc = _congestion_compat_score(req_congestion, s.congestion)
+
+            # s.congestion 대신 방금 구한 AI 현재 레벨 사용
+            store_level = ai_level_map.get(s.id, s.congestion or "medium")
+            cong_sc = _congestion_compat_score(req_congestion, store_level)
+
             dist_sc = _distance_score(d, cutoff=radius)
 
             # 가중치(원하면 조절 가능)
@@ -425,3 +452,25 @@ class RecommendGuideView(APIView):
             "message": "아래 예시를 참고해서 솜봇에게 말을 걸어보세요!",
             "examples": example_messages
         })
+    
+# 혼잡도 예측
+@api_view(['GET'])
+def forecast_store(request, store_id):
+    store = get_object_or_404(Store, pk=store_id)
+
+    raw = request.GET.get('minutes', '')
+    if raw.strip():
+        try:
+            offsets = [int(x) for x in raw.split(',') if x.strip() != '']
+        except ValueError:
+            return Response({'error': 'minutes 파라미터는 정수 콤마 리스트만 가능'}, status=400)
+    else:
+        offsets = [0, 10, 20, 30, 60] # 기본값
+
+    # data는 [{minutes_ahead, at, ai_level}, ...] 형태의 리스트
+    data = forecast_congestion(store, offsets=offsets)
+    return Response({
+        'store_id': store.id,
+        'generated_at': timezone.localtime().isoformat(),
+        'items': data
+    }, status=200)

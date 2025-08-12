@@ -5,6 +5,7 @@ from .views import RecommendStoreView, RecommendGuideView
 from .views import toggle_bookmark, list_bookmarks
 from .views import create_visit_log, get_visit_logs
 from .views import update_mood_tags
+from .views import forecast_store
 
 store_router = SimpleRouter()
 store_router.register('stores', StoreViewSet)
@@ -24,4 +25,7 @@ urlpatterns = [
     # 챗봇 가게(카페, 음식점) 추천
     path('recommend/', RecommendStoreView.as_view(), name='recommend-store'),
     path('recommend/guide/', RecommendGuideView.as_view(), name='recommend-guide'),
+
+    # 혼잡도 예측
+    path('stores/<int:store_id>/forecast/', forecast_store, name='forecast-store'),
 ]

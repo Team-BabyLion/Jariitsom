@@ -37,7 +37,12 @@ class Command(BaseCommand):
         limit = opts.get("limit")
         sleep_sec = float(opts.get("sleep", 0.3))
 
-        qs = Store.objects.all()
+        # 모든 가게
+        # qs = Store.objects.all()
+
+        # google_hourly 가 NULL 인 가게만(재시도시 이걸로 qs 변경 후 커맨드 실행)
+        qs = Store.objects.filter(google_hourly__isnull=True)
+
         if only_with_kakao:
             qs = qs.filter(~Q(kakao_url=""), ~Q(kakao_url=None))
         if limit:
