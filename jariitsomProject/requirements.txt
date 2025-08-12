@@ -26,6 +26,7 @@ grpcio-status==1.71.2
 h11==0.16.0
 httplib2==0.22.0
 idna==3.10
+joblib==1.5.1
 jpype1==1.6.0
 konlpy==0.6.0
 lxml==6.0.0
@@ -49,11 +50,14 @@ python3-openid==3.2.0
 requests==2.32.4
 requests-oauthlib==2.0.0
 rsa==4.9.1
+scikit-learn==1.5.2
+scipy==1.13.1
 selenium==4.34.2
 sniffio==1.3.1
 sortedcontainers==2.4.0
 soupsieve==2.7
 sqlparse==0.5.3
+threadpoolctl==3.6.0
 tqdm==4.67.1
 trio==0.30.0
 trio-websocket==0.12.2
