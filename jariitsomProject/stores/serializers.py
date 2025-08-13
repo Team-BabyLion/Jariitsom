@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import Store, Bookmark, VisitLog
+from .forecast import ensure_ai_congestion_now
 
 # 거리에 따른 도보 시간 계산 함수
 def walk_minutes(distance):
@@ -19,8 +20,7 @@ class StoreSerializer(serializers.ModelSerializer):
     main_gate_walk_minutes = serializers.SerializerMethodField()
     back_gate_walk_minutes = serializers.SerializerMethodField()
 
-    google_current_percent = serializers.SerializerMethodField()
-    google_current_level = serializers.SerializerMethodField()
+    ai_congestion_now = serializers.SerializerMethodField()
 
     # 필드 선언하면 직렬화 할 때 이 메소드를 자동으로 호출
     # 이름 규칙: get_필드명
@@ -48,18 +48,9 @@ class StoreSerializer(serializers.ModelSerializer):
         distance = obj.back_gate_distance
         return walk_minutes(distance)
     
-    # 혼잡도(구글맵 인기 시간대)
-    def get_google_current_percent(self, obj):
-        now = timezone.localtime()
-        return obj.get_google_percent(now.weekday(), now.hour)
-
-    def get_google_current_level(self, obj):
-        now = timezone.localtime()
-        level = obj.current_level_from_google(now)  # 현재 시각 기준 계산 
-        if level != obj.congestion:                 # 모델 필드와 다르면 저장 
-            obj.congestion = level
-            obj.save(update_fields=["congestion"])
-        return level
+    # 이 호출 시점에 db의 congestion도 최신 예측 값으로 동기화됨
+    def get_ai_congestion_now(self, obj: Store) -> str:
+        return ensure_ai_congestion_now(obj)
 
     class Meta:
         model = Store
@@ -68,7 +59,7 @@ class StoreSerializer(serializers.ModelSerializer):
                   'user_distance', 'user_walk_minutes',
                   'main_gate_distance', 'main_gate_walk_minutes',
                   'back_gate_distance', 'back_gate_walk_minutes',
-                  'congestion', 'google_current_percent', 'google_current_level', 
+                  'ai_congestion_now', 'congestion',
                   'business_hours', 'is_bookmarked', 'kakao_url', 'google_url', 'menus',
                   'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
