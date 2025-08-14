@@ -57,7 +57,7 @@ class Store(models.Model) :
 
     # 여유/보통/혼잡으로 분류
     def percent_to_level(self, p: Optional[int]) -> str:
-        if p is None:   return 'low'
+        if p is None:   return 'medium' # null이면 보통
         if p < 30:   return 'low'
         if p < 60:   return 'medium'
         return 'high'
