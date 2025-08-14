@@ -1,7 +1,10 @@
 import json
 from typing import List
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view
+from django.views.decorators.cache import cache_page
+from django.utils.decorators import method_decorator
+from math import cos, radians
+from rest_framework.decorators import api_view, action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, filters, permissions
@@ -99,6 +102,166 @@ class StoreViewSet(ModelViewSet):
         # 슬라이싱 한 것들을 시리얼라이즈
         serializer = self.get_serializer(sliced, many=True)
         return Response(serializer.data)
+    
+    # ========= 지도 가게 위치 표시 ===========
+    @method_decorator(cache_page(10))  # 쿼리스트링 포함 경로 단위로 10초 캐시
+    @action(detail=False, methods=["GET"], url_path="markers")
+    def markers(self, request):
+        """
+        지도 마커용 경량 데이터.
+        필터:
+          - BBox: sw_lat, sw_lng, ne_lat, ne_lng  (권장: 지도 뷰포트 갱신용)
+          - Circle: lat, lng, radius(미터)
+        옵션:
+          - category=cafe|korean|... 
+          - limit, offset
+          - cluster=true|false   (기본 false)
+          - cell_m=80            (클러스터 격자 크기, meters)
+        응답:
+          - cluster=false: [{id, name, category, latitude, longitude, kakao_url, congestion}, ...]
+          - cluster=true : [{lat, lng, count, ids:[...]}]  # 대표 좌표 + 그룹 개수
+        """
+        from .serializers import StoreMarkerSerializer  # 지연 임포트(순환참조 방지)
+
+        qs = Store.objects.all()
+        category = request.query_params.get("category")
+        exclude_category = request.query_params.get("exclude_category")
+
+        # 특정 카테고리 포함
+        if category:
+            qs = qs.filter(category=category)
+
+        # 특정 카테고리 제외
+        if exclude_category:
+            qs = qs.exclude(category=exclude_category)
+
+        # 1) BBox 파라미터
+        sw_lat = request.query_params.get("sw_lat")
+        sw_lng = request.query_params.get("sw_lng")
+        ne_lat = request.query_params.get("ne_lat")
+        ne_lng = request.query_params.get("ne_lng")
+
+        # 2) Circle 파라미터
+        lat = request.query_params.get("lat")
+        lng = request.query_params.get("lng")
+        radius = request.query_params.get("radius")  # meters
+
+        cluster = (request.query_params.get("cluster", "false").lower() == "true")
+        try:
+            cell_m = float(request.query_params.get("cell_m", 80.0))  # 기본 80m 셀
+        except ValueError:
+            cell_m = 80.0
+
+        # BBox가 오면 우선 적용
+        if all([sw_lat, sw_lng, ne_lat, ne_lng]):
+            try:
+                sw_lat, sw_lng = float(sw_lat), float(sw_lng)
+                ne_lat, ne_lng = float(ne_lat), float(ne_lng)
+            except ValueError:
+                return Response({"detail": "bbox 파라미터가 잘못되었습니다."}, status=400)
+
+            # 남서-북동 정상화(뒤집혀 들어온 케이스 방지)
+            if ne_lat < sw_lat:
+                sw_lat, ne_lat = ne_lat, sw_lat
+            if ne_lng < sw_lng:
+                sw_lng, ne_lng = ne_lng, sw_lng
+
+            qs = qs.filter(
+                latitude__gte=sw_lat, latitude__lte=ne_lat,
+                longitude__gte=sw_lng, longitude__lte=ne_lng
+            )
+
+        # BBox가 없고 Circle이 오면 반경 필터
+        elif all([lat, lng, radius]):
+            try:
+                lat, lng, radius = float(lat), float(lng), float(radius)
+            except ValueError:
+                return Response({"detail": "lat/lng/radius 파라미터가 잘못되었습니다."}, status=400)
+
+            # 성능 위해 대략 bbox로 1차 축소
+            ddeg = max(0.01, radius / 100000.0)  # 아주 대략, 위경도 0.01도 ≈ ~1km
+            rough = qs.filter(
+                latitude__gte=lat - ddeg, latitude__lte=lat + ddeg,
+                longitude__gte=lng - ddeg, longitude__lte=lng + ddeg
+            ).only("id", "name", "category", "latitude", "longitude", "kakao_url", "congestion")
+
+            # 정확한 반경은 하버사인으로 2차 필터
+            filtered = []
+            for s in rough:
+                try:
+                    d = haversine(lat, lng, s.latitude, s.longitude)
+                    if d <= radius:
+                        filtered.append(s)
+                except Exception:
+                    continue
+            qs = filtered  # 리스트로 교체
+        
+        else:
+            # 필터 없이 호출되면 과도 응답 방지
+            return Response({"detail": "bbox 또는 lat/lng/radius 중 하나는 반드시 필요합니다."}, status=400)
+
+        # --- 클러스터링 옵션 ---
+        if cluster:
+            # meters → degrees 변환(경도는 위도에 따라 달라서 중심 위도 기준)
+            if isinstance(qs, list) and qs:
+                center_lat = sum(s.latitude for s in qs) / len(qs)
+            else:
+                # BBox의 중앙 위도 추정
+                if all([sw_lat, ne_lat]):
+                    center_lat = (float(sw_lat) + float(ne_lat)) / 2.0
+                else:
+                    center_lat = float(lat) if lat else 37.5
+
+            lat_deg_per_m = 1.0 / 111320.0
+            lon_deg_per_m = 1.0 / (111320.0 * max(0.1, cos(radians(center_lat))))  # 극지방 안정화
+
+            lat_step = cell_m * lat_deg_per_m
+            lon_step = cell_m * lon_deg_per_m
+
+            buckets = {}  # (gi, gj) -> {"lat":..., "lng":..., "count":..., "ids":[...]}
+            iterable = qs if isinstance(qs, list) else qs.iterator()
+            for s in iterable:
+                if s.latitude is None or s.longitude is None:
+                    continue
+                gi = round(s.latitude / lat_step)
+                gj = round(s.longitude / lon_step)
+                key = (gi, gj)
+                slot = buckets.get(key)
+                if not slot:
+                    buckets[key] = {
+                        "lat": s.latitude,
+                        "lng": s.longitude,
+                        "count": 1,
+                        "ids": [s.id],
+                    }
+                else:
+                    # 간단 평균으로 대표 좌표 갱신
+                    c = slot["count"] + 1
+                    slot["lat"] = (slot["lat"] * slot["count"] + s.latitude) / c
+                    slot["lng"] = (slot["lng"] * slot["count"] + s.longitude) / c
+                    slot["count"] = c
+                    slot["ids"].append(s.id)
+
+            # 슬라이싱(무한스크롤/성능 보호)
+            limit = int(request.query_params.get("limit", 300))
+            offset = int(request.query_params.get("offset", 0))
+            groups = list(buckets.values())
+            sliced = groups[offset:offset + limit]
+            # 클러스터 응답
+            return Response(sliced)
+    
+        # --- 일반(비클러스터) 모드 ---
+        limit = int(request.query_params.get("limit", 300))
+        offset = int(request.query_params.get("offset", 0))
+        
+        if isinstance(qs, list):
+            sliced = qs[offset:offset + limit]
+            ser = StoreMarkerSerializer(sliced, many=True)
+            return Response(ser.data)
+
+        qs = qs[offset:offset + limit]
+        ser = StoreMarkerSerializer(qs, many=True)
+        return Response(ser.data)
 
     
 # 클릭할 때마다 즐겨찾기 추가, 삭제
@@ -281,8 +444,6 @@ def _distance_score(meters: float, cutoff: float) -> float:
         return 0.0
     return 1.0 - (meters / cutoff)
 
-import traceback
-
 class RecommendStoreView(APIView):
     """
     POST /recommend/
@@ -326,12 +487,9 @@ class RecommendStoreView(APIView):
             qs = qs.filter(category=req_category)
 
         # ============혼잡도 부분 변경됨============
+        ######## 영업 중이 아닌 가게들 혼잡도 unknown으로 수정 할 수도
+        ########## 그러면 추천할 때 혼잡도 unknown 인 경우 추천하는 가게 후보에서 제외하는 코드 넣어야 할 수도
         # # 3) 현재 혼잡도 반영 갱신(후보만)
-        # now = timezone.localtime()
-        # for s in qs.only("id", "congestion", "google_hourly"):
-        #     lvl = s.current_level_from_google(now=now)
-        #     if lvl != s.congestion:
-        #         Store.objects.filter(pk=s.pk).update(congestion=lvl)
         now = timezone.localtime()
         from .forecast import ensure_ai_congestion_now  # 순환참조 방지용 로컬 임포트
         ai_level_map = {}  # store_id -> 'low'|'medium'|'high' (예외 시 medium)
@@ -356,14 +514,6 @@ class RecommendStoreView(APIView):
 
             # ============혼잡도 부분 변경됨============
             # # 무드/혼잡도/거리 점수
-            # mood_sc = _mood_overlap_score(req_moods, s.mood_tags or [])
-            # cong_sc = _congestion_compat_score(req_congestion, s.congestion)
-            # dist_sc = _distance_score(d, cutoff=radius)
-
-            # # 가중치(원하면 조절 가능)
-            # score = (mood_sc * 0.55) + (cong_sc * 0.25) + (dist_sc * 0.20)
-            # ranked.append((s, round(score, 6)))
-            # 무드/혼잡도/거리 점수
             mood_sc = _mood_overlap_score(req_moods, s.mood_tags or [])
 
             # s.congestion 대신 방금 구한 AI 현재 레벨 사용
