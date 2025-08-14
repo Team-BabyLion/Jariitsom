@@ -9,6 +9,10 @@ urlpatterns = [
     path('', include(user_router.urls)),
     path('auth/', include('rest_framework.urls')),
     path('rest-auth/', include('dj_rest_auth.urls')),
+
+    # 마이페이지(조회/수정/탈퇴)
+    path('account/', views.MyAccountView.as_view()),
+    path('account/password/', views.AccountPasswordView.as_view()),
 ]
 
 # rest-auth/login/ url로 접속 시 405 오류가 뜨는 건 무시해도 됨
