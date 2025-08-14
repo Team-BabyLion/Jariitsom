@@ -115,3 +115,9 @@ class VisitLogSerializer(serializers.ModelSerializer):
         model = VisitLog
         fields = ['id', 'visit_count', 'wait_time', 'congestion',
                   'created_at', 'when', 'day_label']
+
+# 지도에서 가게별 위치 표시할 때 필요한 경량 마커        
+class StoreMarkerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Store
+        fields = ["id", "name", "category", "latitude", "longitude", "kakao_url", "congestion"]
