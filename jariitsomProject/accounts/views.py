@@ -73,9 +73,9 @@ class MyAccountView(APIView):
 
     # 탈퇴
     def delete(self, request):
-        confirm = request.data.get("confirm")
-        if confirm != "탈퇴":
-            return Response({"confirm": ["'탈퇴'를 정확히 입력해 주세요."]}, status=400)
+        # confirm = request.data.get("confirm")
+        # if confirm != "탈퇴":
+        #     return Response({"confirm": ["'탈퇴'를 정확히 입력해 주세요."]}, status=400)
         request.user.delete()
         return Response(status=204)
     
