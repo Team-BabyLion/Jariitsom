@@ -10,13 +10,41 @@
 6. python manage.py migrate
 7. python manage.py createsuperuser
 8. python accounts/scripts/create_social_apps.py
+9. python manage.py fetch_kakao_places
+10. python manage.py update_store_info
+11. python manage.py fetch_google_populartimes
+12. python manage.py shell
+- 셸에서 입력
+        
+```
+from stores.models import Store
+
+deleted_count, _ = Store.objects.filter(photo__isnull=True).delete()
+
+print(f"{deleted_count}개의 가게가 삭제되었습니다.")
+```
+```
+from stores.models import Store
+
+for store in Store.objects.all():
+    menus = store.menus or []
+    names = ', '.join([m['name'] for m in menus if m.get('name')])
+    store.menu_names = names
+    store.save()
+```
+```
+exit()
+```
+13. python manage.py crawl_kakao_reviews
 
 ---
+
 ## 크롤러 개발환경(셀레니움) 사용을 위해 드라이버 설치
 - 본인의 크롬 브라우저 버전에 맞는 크롬 드라이버(https://chromedriver.chromium.org/downloads) 다운로드
 - 다운로드한 폴더의 압축을 해제하고 chromedriver(.exe)를 프로젝트 폴더에 복사(manage.py와 같은 위치)
 
 ---
+
 ## git 협업 방법
 - 개발은 팀 레포의 develop 브랜치에서 진행(PR 여기로)
 - 제출 전 main으로 merge
