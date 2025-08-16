@@ -15,30 +15,15 @@
 11. python manage.py fetch_google_populartimes
 12. python manage.py shell
 - 셸에서 입력
------
-from stores.models import Store, Bookmark, VisitLog
-from django.db.models import Q, Count
-from stores.utils import haversine
-
-MAIN_GATE = (37.60563, 127.0414)
-BACK_GATE = (37.606351, 127.044481)
-
-target_ids = [563, 565, 567, 568, 570, 582, 584, 585, 587]
-
-for store in Store.objects.filter(id__in=target_ids):
-    if store.latitude and store.longitude:
-        store.main_gate_distance = int(haversine(MAIN_GATE[0], MAIN_GATE[1], store.latitude, store.longitude))
-        store.back_gate_distance = int(haversine(BACK_GATE[0], BACK_GATE[1], store.latitude, store.longitude))
-        store.save(update_fields=["main_gate_distance", "back_gate_distance"])
-        print(f"{store.name} - 메인: {store.main_gate_distance}m, 백: {store.back_gate_distance}m")
------
+        
+```
 from stores.models import Store
 
-# photo가 NULL인 가게 삭제
 deleted_count, _ = Store.objects.filter(photo__isnull=True).delete()
 
 print(f"{deleted_count}개의 가게가 삭제되었습니다.")
------
+```
+```
 from stores.models import Store
 
 for store in Store.objects.all():
@@ -46,17 +31,20 @@ for store in Store.objects.all():
     names = ', '.join([m['name'] for m in menus if m.get('name')])
     store.menu_names = names
     store.save()
------
-- 셸에서 입력 끝
-
+```
+```
+exit()
+```
 13. python manage.py crawl_kakao_reviews
 
 ---
+
 ## 크롤러 개발환경(셀레니움) 사용을 위해 드라이버 설치
 - 본인의 크롬 브라우저 버전에 맞는 크롬 드라이버(https://chromedriver.chromium.org/downloads) 다운로드
 - 다운로드한 폴더의 압축을 해제하고 chromedriver(.exe)를 프로젝트 폴더에 복사(manage.py와 같은 위치)
 
 ---
+
 ## git 협업 방법
 - 개발은 팀 레포의 develop 브랜치에서 진행(PR 여기로)
 - 제출 전 main으로 merge
