@@ -13,10 +13,11 @@ from .serializers import StoreSerializer
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
-from .utils import haversine
-from .apis import get_gemini_conditions
+from .utils import haversine, read_coords_from_request, read_radius_topk
+from .apis import get_gemini_conditions, get_gemini_chat_reply
+
 from .models import Store, Bookmark, VisitLog
-from .forecast import forecast_congestion
+from .forecast import forecast_congestion, ensure_ai_congestion_now
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -461,10 +462,9 @@ class RecommendStoreView(APIView):
             return Response({"error": "message가 필요합니다."}, status=status.HTTP_400_BAD_REQUEST)
 
         # 위치/반경 파라미터
-        lat = float(request.data.get("lat", 37.606372))
-        lng = float(request.data.get("lng", 127.041772))
-        radius = float(request.data.get("radius", 1200))
-        top_k = int(request.data.get("top_k", 5))
+        # ★ 위치/반경 파싱 (헤더/바디/기본값 폴백)
+        lat, lng = read_coords_from_request(request)
+        radius, top_k = read_radius_topk(request, default_radius=1200.0, default_topk=5)
 
         # 1) Gemini로 의도 추출
         gemini_text = get_gemini_conditions(user_input)
@@ -487,11 +487,9 @@ class RecommendStoreView(APIView):
             qs = qs.filter(category=req_category)
 
         # ============혼잡도 부분 변경됨============
-        ######## 영업 중이 아닌 가게들 혼잡도 unknown으로 수정 할 수도
-        ########## 그러면 추천할 때 혼잡도 unknown 인 경우 추천하는 가게 후보에서 제외하는 코드 넣어야 할 수도
         # # 3) 현재 혼잡도 반영 갱신(후보만)
         now = timezone.localtime()
-        from .forecast import ensure_ai_congestion_now  # 순환참조 방지용 로컬 임포트
+
         ai_level_map = {}  # store_id -> 'low'|'medium'|'high' (예외 시 medium)
         for s in qs.only("id", "congestion"):
             try:
@@ -541,7 +539,6 @@ class RecommendStoreView(APIView):
             ser = StoreSerializer(top, many=True, context={"request": request})
 
             # chat message (결과 없음일 때)
-            from .apis import get_gemini_chat_reply
             chat_message = get_gemini_chat_reply(
                 user_input=user_input,
                 parsed=parsed,
@@ -570,7 +567,6 @@ class RecommendStoreView(APIView):
         top1, _ = ranked[0]
         top1_dist = haversine(lat, lng, top1.latitude, top1.longitude)
             
-        from .apis import get_gemini_chat_reply
         chat_message = get_gemini_chat_reply(
             user_input=user_input,
             parsed=parsed,
@@ -587,7 +583,7 @@ class RecommendStoreView(APIView):
             "chat_message": chat_message,
         })
 
-
+import random
 ### 챗봇을 시작할 때 질문하는 가이드 양식 보여주는 api
 class RecommendGuideView(APIView):
     def get(self, request):
@@ -598,9 +594,11 @@ class RecommendGuideView(APIView):
             "북적이지 않는 바 조용히 술 마시고 싶어요",
             "카페인데 사람 너무 많은 건 피하고 싶어"
         ]
+        random_example = random.choice(example_messages)
+
         return Response({
             "message": "아래 예시를 참고해서 솜봇에게 말을 걸어보세요!",
-            "examples": example_messages
+            "examples": random_example
         })
     
 # 혼잡도 예측

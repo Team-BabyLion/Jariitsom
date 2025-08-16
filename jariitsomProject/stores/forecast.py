@@ -26,7 +26,7 @@ WEIGHT_MODEL_MAX = 0.9
 WEEKDAY_MATCH_BONUS = 2.0
 
 # 학습 샘플 최소 개수 기준(이 미만이면 불안정으로 간주함)
-MIN_SAMPLES = 10
+MIN_SAMPLES = 20
 
 # dt를 주기적(사인/코사인) 특성으로 변환
 def _time_feats(dt) -> Tuple[float, float, float, float]:
