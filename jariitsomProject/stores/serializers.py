@@ -2,6 +2,8 @@ from rest_framework import serializers
 from django.utils import timezone
 from .models import Store, Bookmark, VisitLog
 from .forecast import ensure_ai_congestion_now
+from datetime import datetime, time, timedelta
+from django.utils import timezone
 
 # 거리에 따른 도보 시간 계산 함수
 def walk_minutes(distance):
@@ -10,6 +12,21 @@ def walk_minutes(distance):
     return None
 
 WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
+
+def _parse_range(s: str):
+    if not s or "~" not in s:
+        return None, None
+    try:
+        a, b = [p.strip() for p in s.split("~", 1)]
+        ha, ma = map(int, a.split(":"))
+        hb, mb = map(int, b.split(":"))
+        return time(ha, ma), time(hb, mb)
+    except Exception:
+        return None, None # 영업시간 포맷이 비정상일 경우
+
+def _aware_today(t: time, base_dt):
+    naive = datetime.combine(base_dt.date(), t)
+    return timezone.make_aware(naive, base_dt.tzinfo)
 
 class StoreSerializer(serializers.ModelSerializer): 
     # SerializerMethodField(): 읽기 전용 필드, 직렬화 시에 동적으로 계산된 값을 넣고 싶을 때 사용
@@ -22,6 +39,9 @@ class StoreSerializer(serializers.ModelSerializer):
 
     ai_congestion_now = serializers.SerializerMethodField()
     congestion = serializers.SerializerMethodField()
+
+    open_status = serializers.SerializerMethodField()
+    today_weekday = serializers.SerializerMethodField()
 
     # 필드 선언하면 직렬화 할 때 이 메소드를 자동으로 호출
     # 이름 규칙: get_필드명
@@ -58,6 +78,37 @@ class StoreSerializer(serializers.ModelSerializer):
 
     def get_congestion(self, obj):
         return self._ai_level(obj)
+    
+    # 영업시간 관련
+    def get_open_status(self, obj):
+        now = timezone.localtime()  # aware (Asia/Seoul)
+        today_hours = (obj.business_hours or {}).get(WEEKDAYS[now.weekday()], {})
+
+        open_t, close_t = _parse_range((today_hours.get("open_close") or "").strip())
+        br_start, br_end = _parse_range((today_hours.get("breaktime") or "").strip())
+
+        status = "영업종료"
+
+        if open_t and close_t:
+            start_dt = _aware_today(open_t, now)   # aware
+            end_dt   = _aware_today(close_t, now)  # aware
+            if end_dt <= start_dt:                 # 자정 넘김
+                end_dt += timedelta(days=1)
+
+            if start_dt <= now < end_dt:
+                if br_start and br_end:
+                    br_s = _aware_today(br_start, now)
+                    br_e = _aware_today(br_end, now)
+                    if br_e <= br_s:               # 자정 넘김
+                        br_e += timedelta(days=1)
+                    status = "브레이크타임" if (br_s <= now < br_e) else "영업중"
+                else:
+                    status = "영업중"
+        return status
+    
+    def get_today_weekday(self, obj):
+        w = timezone.localtime().weekday()  # 0=월 ... 6=일
+        return WEEKDAYS[w]
 
     class Meta:
         model = Store
@@ -67,7 +118,8 @@ class StoreSerializer(serializers.ModelSerializer):
                   'main_gate_distance', 'main_gate_walk_minutes',
                   'back_gate_distance', 'back_gate_walk_minutes',
                   'ai_congestion_now', 'congestion',
-                  'business_hours', 'is_bookmarked', 'kakao_url', 'google_url', 'menus',
+                  'business_hours', 'open_status', 'today_weekday',
+                  'is_bookmarked', 'kakao_url', 'google_url', 'menus',
                   'mood_tags' ]
         # is_~들은 모델에는 필요 없는 필드지만, 프론트에는 보내줘야 함
         # 프론트에도 mood_tag 전달 가능
