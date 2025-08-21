@@ -63,11 +63,15 @@ INSTALLED_APPS = [
 
     'accounts',
     'stores',
+
+    # 크로스 헤더 설정
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware', #크로스 헤어설정
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -92,7 +96,7 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
 LOGIN_REDIRECT_URL = '/'
 
 REST_FRAMEWORK = { 
-	'DEFAULT_AUTHENTICATION_CLASSES': [
+   'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication', 
     ],
 }
@@ -174,3 +178,16 @@ MEDIA_URL = '/media/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# 크로스 헤어 설정
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
