@@ -27,6 +27,13 @@ from django.utils import timezone
 from .kakao_ai_crawl import crawl_kakao_ai_by_place_id, extract_place_id
 from .mood_extractor import pick_mood_tags
 
+# 거리 문자열 도움주는 함수
+def _meters_to_text(m):
+    if m is None:
+        return None
+    m_rounded = int(round(m / 50.0) * 50)
+    return f"{m_rounded}m" if m_rounded < 1000 else f"{m_rounded/1000:.1f}km"
+
 WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 
 def _parse_range(s: str):
