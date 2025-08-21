@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
 from .utils import haversine, read_coords_from_request, read_radius_topk
 from .apis import get_gemini_conditions, get_gemini_chat_reply
+from .apis import extract_conditions, missing_slots, follow_up_question
 
 from .models import Store, Bookmark, VisitLog
 from .forecast import forecast_congestion, ensure_ai_congestion_now
@@ -25,6 +26,14 @@ from django.utils import timezone
 
 from .kakao_ai_crawl import crawl_kakao_ai_by_place_id, extract_place_id
 from .mood_extractor import pick_mood_tags
+
+# 거리 문자열 도움주는 함수
+def _meters_to_text(m):
+    if m is None:
+        return None
+    m_rounded = int(round(m / 50.0) * 50)
+    return f"{m_rounded}m" if m_rounded < 1000 else f"{m_rounded/1000:.1f}km"
+
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -489,14 +498,8 @@ def _distance_score(meters: float, cutoff: float) -> float:
 
 class RecommendStoreView(APIView):
     """
-    POST /recommend/
-    {
-      "message": "조용하고 감성적인 분위기의 카페 추천. 너무 붐비는 곳은 싫어",
-      "lat": 37.606372,     # 선택 (기본값: 동덕여대 좌표)
-      "lng": 127.041772,    # 선택
-      "radius": 1200,       # 선택 (미터)
-      "top_k": 5            # 선택
-    }
+    POST /recommend/?lat=..&lng=..
+    body: { "message": "조용하고 감성적인 카페 추천" }
     """
     def post(self, request):
         user_input = request.data.get("message", "")
@@ -505,17 +508,44 @@ class RecommendStoreView(APIView):
 
         # 위치/반경 파라미터
         # ★ 위치/반경 파싱 (헤더/바디/기본값 폴백)
-        lat, lng = read_coords_from_request(request)
-        radius, top_k = read_radius_topk(request, default_radius=1200.0, default_topk=5)
+        # 반경 / 후보군 개수 고정값
+        RADIUS_DEFAULT = 1200.0   # 1.2km
+        TOPK_DEFAULT   = 5
+
+        # === 현재 위치: 프론트가 쿼리 파라미터로 전달 (?lat=..&lng=..) ===
+        try:
+            lat = float(request.query_params.get("lat"))
+            lng = float(request.query_params.get("lng"))
+        except (TypeError, ValueError):
+            # lat/lng가 없거나 잘못된 경우엔 기존 기본값/폴백
+            lat, lng = read_coords_from_request(request)  # 동덕여대 기본 좌표 폴백
+        
+        radius = RADIUS_DEFAULT
+        top_k = TOPK_DEFAULT
 
         # 1) Gemini로 의도 추출
         gemini_text = get_gemini_conditions(user_input)
         if gemini_text is None:
             return Response({"error": "Gemini API 호출 실패"}, status=500)
 
-        parsed = _parse_gemini_json(gemini_text)
+        # 우선 dict로 바로 떨어지는 신규 함수 사용
+        parsed = extract_conditions(user_input)
+
+        # 실패 시 기존 방식으로 폴백(문자열→수동 파싱)
         if not parsed:
-            return Response({"error": f"Gemini 응답 파싱 실패: {gemini_text}"}, status=500)
+            gemini_text = get_gemini_conditions(user_input)
+            if gemini_text is None:
+                return Response({"error": "Gemini API 호출 실패"}, status=500)
+            parsed = _parse_gemini_json(gemini_text)
+
+        # ★ 빠진 슬롯만 되묻기
+        miss = missing_slots(parsed)
+        if miss:
+            return Response({
+                "need_more": True,
+                "missing": miss,
+                "ask": follow_up_question(miss)
+            }, status=200)
 
         req_mood_str = parsed.get("mood", "") or ""
         req_congestion = _normalize_congestion(parsed.get("congestion", "medium"))
@@ -540,8 +570,6 @@ class RecommendStoreView(APIView):
                 ai_level_map[s.id] = s.congestion or "medium"
 
         # 4) 반경 필터 및 스코어링
-        debug = str(request.query_params.get("debug", "false")).lower() == "true"
-
         ranked = []
         for s in qs:
             # 거리
@@ -596,60 +624,43 @@ class RecommendStoreView(APIView):
                 top1_url=(top[0].kakao_url if top else None),
             ) or '조건에 맞는 결과가 적어 반경을 넓혀보겠솜! 가까운 순으로 보여줬솜!'
 
-            if not debug:
-                return Response({"chat_message": chat_message})
             
-            # debug=true일 때만 무거운 페이로드 포함
-            ser = StoreSerializer(top, many=True, context={"request": request})
+            if top:
+                d0 = backup[0][1]
+                dist_text = _meters_to_text(d0)
+                name = top[0].name
+                url = top[0].kakao_url or ""
+                # 거리 말풍선
+                chat_message = f'{dist_text} 정도에 "{name}"가 있솜!'
+                # url이 있을 경우의 응답 메시지
+                payload = {"chat_message": chat_message}
+                if url:
+                    payload["link_message"] = "링크로 바로 가보솜~"
+                    payload["link_url"] = url
+                return Response(payload)
 
-            return Response({
-                "parsed": {"mood": req_mood_str, "congestion": req_congestion, "category": req_category},
-                "count": len(top),
-                "results": ser.data,
-                "note": "조건 일치 매칭 없음 → 카테고리/거리 기준 폴백",
-                "chat_message": chat_message,
-            })
+            return Response({"chat_message": "조건에 맞는 결과가 적어 반경을 넓혀보겠솜!"})
 
-        # 5) 상위 N개 반환
+        # 정상 매칭: 상위 정렬
         ranked.sort(key=lambda x: x[1], reverse=True)
-        top = [t[0] for t in ranked[:top_k]]
-            
-        # chat message (정상 매칭)
-        # Top1 정보만 넘겨도 충분히 자연스럽게 말해줌
-        top1 = ranked[0][0]
-        # d(거리)를 튜플에 넣어뒀으니 우선 그걸 쓰고, None이면 계산
-        top1_dist = ranked[0][3]
+        top1, _, _, top1_dist = ranked[0]
         if top1_dist is None:
             top1_dist = haversine(lat, lng, top1.latitude, top1.longitude)
-            
-        chat_message = get_gemini_chat_reply(
-            user_input=user_input,
-            parsed=parsed,
-            top1_name=top1.name,
-            top1_distance_m=top1_dist,
-            top1_url=top1.kakao_url,
-        ) or f'원하는 장소를 찾았솜! "{top1.name}"로 가보는 건 어떠솜?'
-        
-        if not debug:
-            # 프로덕션: 가벼운 응답만
-            return Response({"chat_message": chat_message})
-        
-        ser = StoreSerializer(top, many=True, context={"request": request})
-        scores = [{
-            "store_id": t[0].id,
-            "name": t[0].name,
-            "total": t[1],
-            "detail": t[2],   # {"mood":..., "congestion":..., "distance":...}
-            "distance_m": t[3],
-        } for t in ranked[:top_k]]
 
-        return Response({
-            "parsed": {"mood": req_mood_str, "congestion": req_congestion, "category": req_category},
-            "count": len(top),
-            "scores": scores,
-            "results": ser.data,
-            "chat_message": chat_message,
-        })
+        dist_text = _meters_to_text(top1_dist)
+        name = top1.name
+        url = top1.kakao_url or ""
+
+        # 최종 메시지: 거리/가게명/URL 포함, '솜!' 톤 유지
+        # 말풍선 1
+        chat_message = f'{dist_text} 정도에 "{name}" 카페가 있솜!'
+        payload = {"chat_message": chat_message}
+        # 말풍선 2 (URL이 있으면)
+        if url:
+            payload["link_message"] = "더 자세히 확인해보솜!"
+            payload["link_url"] = url
+
+        return Response(payload)
 
 import random
 ### 챗봇을 시작할 때 질문하는 가이드 양식 보여주는 api
