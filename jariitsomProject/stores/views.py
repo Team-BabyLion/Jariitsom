@@ -20,11 +20,44 @@ from .models import Store, Bookmark, VisitLog
 from .forecast import forecast_congestion, ensure_ai_congestion_now
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from django.utils import timezone
 
 from .kakao_ai_crawl import crawl_kakao_ai_by_place_id, extract_place_id
 from .mood_extractor import pick_mood_tags
+
+WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
+
+def _parse_range(s: str):
+    if not s or "~" not in s:
+        return None, None
+    try:
+        a, b = [p.strip() for p in s.split("~", 1)]
+        ha, ma = map(int, a.split(":"))
+        hb, mb = map(int, b.split(":"))
+        return time(ha, ma), time(hb, mb)
+    except Exception:
+        return None, None
+
+def _aware_today(t: time, base_dt):
+    naive = datetime.combine(base_dt.date(), t)
+    return timezone.make_aware(naive, base_dt.tzinfo)
+
+# 영업종료일 경우만 true
+def _is_closed_now(store, now):
+    bh = getattr(store, "business_hours", None) or {}
+    today = bh.get(WEEKDAYS[now.weekday()], {}) or {}
+
+    open_t, close_t = _parse_range((today.get("open_close") or "").strip())
+    if not (open_t and close_t):
+        return False
+
+    start_dt = _aware_today(open_t, now)
+    end_dt   = _aware_today(close_t, now)
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+
+    return not (start_dt <= now < end_dt)
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -84,6 +117,10 @@ class StoreViewSet(ModelViewSet):
             ai_level = ensure_ai_congestion_now(s)
             s._ai_level = ai_level
             s._ai_rank = LEVEL_RANK.get(ai_level, 1)
+
+        # 영업종료인 가게는 리스트에서 조회 불가능
+        now = timezone.localtime()
+        items = [s for s in items if not _is_closed_now(s, now)]
 
         if ordering == 'distance': # 거리순 정렬
             # 거리가 없다면 무한대로 취급 -> 가장 뒤로 감
