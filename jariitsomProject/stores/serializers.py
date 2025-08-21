@@ -21,6 +21,7 @@ class StoreSerializer(serializers.ModelSerializer):
     back_gate_walk_minutes = serializers.SerializerMethodField()
 
     ai_congestion_now = serializers.SerializerMethodField()
+    congestion = serializers.SerializerMethodField()
 
     # 필드 선언하면 직렬화 할 때 이 메소드를 자동으로 호출
     # 이름 규칙: get_필드명
@@ -49,8 +50,14 @@ class StoreSerializer(serializers.ModelSerializer):
         return walk_minutes(distance)
     
     # 이 호출 시점에 db의 congestion도 최신 예측 값으로 동기화됨
-    def get_ai_congestion_now(self, obj: Store) -> str:
+    def _ai_level(self, obj):
         return ensure_ai_congestion_now(obj)
+
+    def get_ai_congestion_now(self, obj):
+        return self._ai_level(obj)
+
+    def get_congestion(self, obj):
+        return self._ai_level(obj)
 
     class Meta:
         model = Store
