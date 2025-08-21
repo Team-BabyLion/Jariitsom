@@ -1,5 +1,3 @@
-# stores/management/commands/crawl_kakao_reviews.py
-
 from django.core.management.base import BaseCommand
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -11,6 +9,14 @@ from konlpy.tag import Okt
 from stores.models import Store
 from collections import Counter, defaultdict
 import time, re
+
+import gc, jpype
+from konlpy import jvm
+
+# 메모리/연산 캡
+MAX_SENT_LEN   = 300     # 한 문장 길이 상한
+MAX_ADJ_KEEP   = 400     # 형용사 카운터 상한
+MAX_PAIR_KEEP  = 400     # 결합태그 카운터 상한
 
 EMOJI_RE = re.compile("[\U00010000-\U0010ffff]", flags=re.UNICODE)
 
@@ -101,9 +107,34 @@ def split_sentences(text: str):
     # 간단 문장 분리: 종결/서술(~다/~요/문장부호)
     return [s.strip() for s in re.split(r"(?<=[\.!\?]|요|다)\s+", text) if s.strip()]
 
+def ensure_okt():
+    """JVM 죽었을 때 자동 재기동 + OKT 재생성."""
+    global OKT
+    if not jpype.isJVMStarted():
+        try:
+            jvm.init_jvm()
+        except Exception:
+            pass
+        OKT = Okt()
+
 def tokens_with_pos(sentence: str):
-    # 원형화(stem=True): '깔끔했어요' -> '깔끔하다'
-    return OKT.pos(sentence, stem=True)
+    """문장 단위로만 POS 호출 (JVM 상태 체크 포함)."""
+    ensure_okt()
+    try:
+        return OKT.pos(sentence, stem=True)
+    except Exception:
+        # 오류 시 1회 재기동 후 재시도
+        ensure_okt()
+        return OKT.pos(sentence, stem=True)
+    
+def _trim_counter(cntr: Counter, keep: int):
+    """카운터 메모리 캡: 상위 N개만 유지."""
+    if len(cntr) > keep * 2:
+        for k, _ in cntr.most_common()[keep:]:
+            try:
+                del cntr[k]
+            except KeyError:
+                pass
 
 def adjective_pretty(adj: str) -> str:
     # '깔끔하다' -> '깔끔한' 표기
@@ -117,9 +148,10 @@ def build_anchor_set(category: str):
         base |= ANCHORS_BY_CATEGORY[category]
     return base
 
-def score_mood_words(text: str, category: str):
+def score_mood_words_stream(sent_iter, category: str):
     """
-    문장을 돌며 형용사/묘사 명사를 후보로 삼아 점수화.
+    리뷰/요약을 문장 스트림으로 받아 즉시 점수화(누적 카운터만 유지).
+    거대한 문자열/리스트 생성 없음 → JVM 힙 압박 큰 폭 감소.
     - 앵커 근접 가중치
     - 부정어 반전
     - 강조/약화 부사 가중치
@@ -127,12 +159,18 @@ def score_mood_words(text: str, category: str):
     - n-gram(형용사+앵커) 후보 가산
     """
     anchors = build_anchor_set(category)
-    candidates = Counter()
-    pair_candidates = Counter()  # adj+anchor n-gram
+    cand_adj = Counter()
+    cand_pairs = Counter()
 
-    for sent in split_sentences(text):
+    for sent in sent_iter:
+        if not sent:
+            continue
+        if len(sent) > MAX_SENT_LEN:
+            sent = sent[:MAX_SENT_LEN]
+
         morphs = tokens_with_pos(sent)  # [(word, tag)]
         tokens_only = [w for w,_ in morphs]
+
         # 앵커 위치들
         anchor_idx = [i for i,(w,t) in enumerate(morphs) if (t in {"Noun","Adjective"} and w in anchors)]
 
@@ -153,6 +191,9 @@ def score_mood_words(text: str, category: str):
             cand = NORMALIZE.get(cand, cand)
 
             # base polarity
+            """base = 0.25
+            if cand in POS_WORDS: base = 1.0
+            elif cand in NEG_WORDS: base = -1.0"""
             base = 0.0
             if cand in POS_WORDS:
                 base += 1.0
@@ -186,24 +227,20 @@ def score_mood_words(text: str, category: str):
 
             # 너무 부정적이면 태그 후보에서 제외(무드에선 부정 성향 제외)
             if score >= -0.2:
-                candidates[cand] += score
+                cand_adj[cand] += score
+                # n-gram: 가까운 앵커를 하나 골라 결합 후보 가산
+                if anchor_idx:
+                    nearest = min(anchor_idx, key=lambda a: abs(i-a))
+                    if abs(nearest - i) <= PROX_MID:
+                        pair = f"{adjective_pretty(cand)} {tokens_only[nearest]}"
+                        cand_pairs[pair] += max(0.1, score)
 
-            # n-gram: 가까운 앵커를 하나 골라 결합 후보 가산
-            if anchor_idx:
-                nearest = min(anchor_idx, key=lambda a: abs(i-a))
-                if abs(nearest - i) <= PROX_MID:
-                    pair = f"{adjective_pretty(cand)} {tokens_only[nearest]}"
-                    pair_candidates[pair] += max(0.1, score)
+        _trim_counter(cntr=cand_adj,  keep=MAX_ADJ_KEEP)
+        _trim_counter(cntr=cand_pairs, keep=MAX_PAIR_KEEP)
 
-    return candidates, pair_candidates
+    return cand_adj, cand_pairs
 
-def pick_tags(text: str, category: str, top_k=TOP_K, mode=TAG_MODE):
-    text = normalize_text(text)
-    if not text:
-        return []
-
-    cand_adj, cand_pairs = score_mood_words(text, category)
-
+def pick_tags_from_counters(cand_adj: Counter, cand_pairs: Counter, top_k=TOP_K, mode=TAG_MODE):
     # 형용사 표기 prettify & 동의어 정규화된 상태 유지
     pretties = Counter()
     for adj, sc in cand_adj.items():
@@ -213,21 +250,14 @@ def pick_tags(text: str, category: str, top_k=TOP_K, mode=TAG_MODE):
     top_adj = [w for w,_ in pretties.most_common(20)]
     top_pairs = [w for w,_ in cand_pairs.most_common(20)]
 
-    # 최종 태그 선택
-    final = []
-    if mode == "adj_anchor":
-        pool = top_pairs + top_adj  # 결합 태그 우선
-    else:
-        pool = top_adj + top_pairs  # 형용사 우선
-
-    seen = set()
+    pool = (top_pairs + top_adj) if mode == "adj_anchor" else (top_adj + top_pairs)
+    
+    final, seen = [], set()
     for w in pool:
         w = w.strip()
         if len(w) < 2:
             continue
-        if w in seen:
-            continue
-        if w in STOPWORDS:
+        if w in seen or w in STOPWORDS:
             continue
         seen.add(w)
         final.append(w)
@@ -243,32 +273,33 @@ def clean_text(s: str) -> str:
     s = s.replace("\u200b", "").strip()     # zero-width 제거
     return re.sub(r"\s+", " ", s)
 
-def collect_review_texts(driver, max_reviews=60, max_round=6):
-    """모바일 뷰에서 리뷰 본문만 수집(p.desc_review). 스크롤로 더 로드."""
-    collected = []
+def iter_review_texts(driver, max_reviews=60, max_round=6):
+    """리뷰 본문을 yield로 한 줄씩 즉시 방출 (중복 제한에 상한)."""
     seen = set()
+    count = 0
     for r in range(max_round):
-        # 스크롤 조금씩 내려서 lazy-load 유도
         driver.execute_script("window.scrollBy(0, document.body.scrollHeight*0.6);")
-        time.sleep(1.2)
+        time.sleep(1.0)
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
-
-        # '더보기' 버튼 텍스트는 제거
         for btn in soup.select("p.desc_review span.btn_more"):
             btn.extract()
 
         for p in soup.select("p.desc_review"):
+            if count >= max_reviews:
+                return
             t = clean_text(p.get_text(" ", strip=True))
-            if not t or t in seen:
+            if not t:
                 continue
-            seen.add(t)
-            collected.append(t)
-            if len(collected) >= max_reviews:
-                return collected
-    return collected
+            # seen 크기 상한 (중복 방지 세트가 너무 커지지 않도록)
+            if len(seen) < 5000:
+                if t in seen:
+                    continue
+                seen.add(t)
+            count += 1
+            yield t
 
-def extract_review_keywords(place_id):
+def extract_review_keywords(place_id, category:str = None):
     url = f"https://place.map.kakao.com/{place_id}"
 
     mobile_ua = (
@@ -276,7 +307,7 @@ def extract_review_keywords(place_id):
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1"
     )
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new") # 안정성을 위해 설정
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=390,844")  # 모바일 뷰
@@ -287,9 +318,9 @@ def extract_review_keywords(place_id):
 
     try:
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
-        time.sleep(2)
+        time.sleep(1.0)
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
-        time.sleep(1)
+        time.sleep(0.6)
 
         # 블로그 AI 요약 키워드
         blog_keywords = []
@@ -317,9 +348,9 @@ def extract_review_keywords(place_id):
                 EC.presence_of_element_located((By.CSS_SELECTOR, "a.link_ai"))
             )
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", trigger)
-            time.sleep(0.3)
+            time.sleep(0.2)
             driver.execute_script("arguments[0].click();", trigger)
-            time.sleep(1.2)
+            time.sleep(0.8)
 
             WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "div.group_summary, div.info_ai"))
@@ -337,16 +368,35 @@ def extract_review_keywords(place_id):
             bullet_tags = soup.select("div.info_ai span.txt_option")
             ai_bullets = [b.get_text(" ", strip=True) for b in bullet_tags if b.get_text(strip=True)]
 
-        # === 폴백: 리뷰 본문 긁기 ===
-        raw_reviews = collect_review_texts(driver, max_reviews=80, max_round=8)
+        # 리뷰 본문: 리스트 수집 X, 제너레이터로 바로 흘림
+        review_iter = iter_review_texts(driver, max_reviews=60, max_round=6)
+
+        # 문장 스트림 생성: 긴 문자열 join 금지
+        def sentence_stream():
+            if store_summary:
+                for s in split_sentences(store_summary):
+                    yield s
+            for b in ai_bullets:
+                for s in split_sentences(b):
+                    yield s
+            for kw in blog_keywords:
+                yield kw  # 키워드는 그대로 한 문장 취급
+            for t in review_iter:
+                for s in split_sentences(t):
+                    yield s
+
+        cand_adj, cand_pairs = score_mood_words_stream(sentence_stream(), category or None)
+        tags = pick_tags_from_counters(cand_adj, cand_pairs, top_k=TOP_K, mode=TAG_MODE)
+
+        # 큰 객체 참조 끊고 가비지 컬렉션
+        del soup, info_review, bullet_tags
+        gc.collect()
 
         return {
-            "store_summary": store_summary,
-            "ai_bullets": ai_bullets,
-            "blog_keywords": blog_keywords,
-            "raw_reviews": raw_reviews,
+            "tags": tags if tags else ["무드정보부족"],
+            "had_ai": bool(store_summary or ai_bullets or blog_keywords),
         }
-
+    
     except Exception as e:
         print("❌ 요약 정보 크롤링 실패:", e)
         try:
@@ -356,7 +406,10 @@ def extract_review_keywords(place_id):
             pass
         return {}
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 # url에서 place_id 추출 (http/https 모두 대응)
 def extract_place_id(url):
@@ -366,48 +419,39 @@ def extract_place_id(url):
     return m.group(1) if m else None
 
 class Command(BaseCommand):
-    help = "DB에 저장된 모든 가게의 카카오 URL을 기반으로 리뷰 크롤링 및 mood_tags 업데이트(정확도 향상 버전)"
+    help = "DB에 저장된 모든 가게의 카카오 URL을 기반으로 리뷰 크롤링 및 mood_tags 업데이트(스트리밍 메모리 최적화)"
 
     def handle(self, *args, **options):
         stores = Store.objects.exclude(kakao_url__isnull=True).exclude(kakao_url='')
 
-        for store in stores:
-            place_id = extract_place_id(store.kakao_url)
-            if not place_id:
-                self.stdout.write(self.style.ERROR(f"[{store.name}] place_id 추출 실패"))
-                continue
+        for idx, store in enumerate(stores, 1):
+            try:
+                place_id = extract_place_id(store.kakao_url)
+                if not place_id:
+                    self.stdout.write(self.style.ERROR(f"[{store.name}] place_id 추출 실패"))
+                    continue
 
-            result = extract_review_keywords(place_id)
-            if not result:
-                store.mood_tags = ["요약 없음"]
+                result = extract_review_keywords(place_id, category=getattr(store, "category", None))
+                if not result:
+                    store.mood_tags = ["요약 없음"]
+                    store.save()
+                    self.stdout.write(self.style.WARNING(f"[{store.name}] 요약 없음 태그 저장"))
+                    time.sleep(0.6)  # 속도조절
+                    continue
+
+                store.mood_tags = result.get("tags", ["무드정보부족"])
                 store.save()
-                self.stdout.write(self.style.WARNING(f"[{store.name}] 요약 없음 태그 저장"))
-                continue
 
-            # 텍스트 결합: AI요약/불릿/블로그키워드 + 리뷰본문
-            combined_bits = []
-            if result.get("store_summary"):
-                combined_bits.append(result["store_summary"])
-            if result.get("ai_bullets"):
-                combined_bits.append(" ".join(result["ai_bullets"]))
-            if result.get("blog_keywords"):
-                combined_bits.append(" ".join(result["blog_keywords"]))
-            if result.get("raw_reviews"):
-                combined_bits.append(" ".join(result["raw_reviews"]))
-
-            combined_text = " ".join(filter(None, combined_bits)).strip()
-
-            if not combined_text:
-                store.mood_tags = ["요약 없음"]
-                store.save()
-                self.stdout.write(self.style.WARNING(f"[{store.name}] 요약/리뷰 모두 없음"))
-                continue
-
-            tags = pick_tags(combined_text, getattr(store, "category", None), top_k=TOP_K, mode=TAG_MODE)
-            store.mood_tags = tags if tags else ["무드정보부족"]
-            store.save()
-
-            src = "AI+리뷰" if result.get("store_summary") or result.get("ai_bullets") or result.get("blog_keywords") else "리뷰"
-            self.stdout.write(self.style.SUCCESS(
-                f"[{store.name}] ({src}) mood_tags 업데이트: {store.mood_tags}"
-            ))
+                src = "AI+리뷰" if result.get("had_ai") else "리뷰"
+                self.stdout.write(self.style.SUCCESS(
+                    f"[{store.name}] ({src}) mood_tags 업데이트: {store.mood_tags}"
+                ))
+            except KeyboardInterrupt:
+                self.stdout.write(self.style.ERROR("사용자 중단"))
+                break
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"[{store.name}] 처리 중 예외: {e}"))
+            finally:
+                # 메모리/차단 회피
+                gc.collect()
+                time.sleep(0.6 + (idx % 2) * 0.4)

@@ -381,7 +381,7 @@ def update_mood_tags(request, store_id):
     # (선택) 모델에 store_summary 필드 있다면 같이 저장
     if hasattr(store, "store_summary"):
         store.store_summary = data.get("store_summary", "")
-
+    
     store.save()
     return Response({
         'message': '무드 태그가 업데이트되었습니다.',
@@ -413,18 +413,60 @@ def _normalize_congestion(value: str) -> str:
 def _tokenize_mood(text: str) -> List[str]:
     if not text:
         return []
-    # 쉼표/공백 기준 단순 분할 (예: "조용한, 감성적인" → ["조용한","감성적인"])
     raw = text.replace(",", " ").split()
     return [t.strip() for t in raw if t.strip()]
 
 def _mood_overlap_score(request_moods: List[str], store_moods: List[str]) -> float:
     if not request_moods or not store_moods:
         return 0.0
-    rq = set(request_moods)
-    st = set([m.strip() for m in (store_moods or []) if m])
-    inter = len(rq & st)
-    # 요청 충족 비율(요청 태그 중 몇 개를 만족했는가)
-    return inter / max(1, len(rq))
+    # 가게 태그 정규화(공통 후행어 제거)
+    CLEAN_SUFFIX = (" 분위기", " 무드", " 느낌", " 좌석", " 자리")
+    sm = []
+    for tag in store_moods:
+        if not tag:
+            continue
+        x = tag.strip().lower()
+        for suf in CLEAN_SUFFIX:
+            if x.endswith(suf):
+                x = x[: -len(suf)]
+        sm.append(x)
+    store_set = set(sm)
+
+    exact = 0
+    partial = 0
+
+    for rq in request_moods:
+        rq = rq.strip().lower()
+        if not rq:
+            continue
+
+        # 1) 정확 일치
+        if rq in store_set:
+            exact += 1
+            continue
+
+        # 2) 부분 일치(요청 단어가 태그 안에 포함 / 태그가 요청 안에 포함)
+        hit = False
+        for tag in store_set:
+            if rq in tag or tag in rq:
+                partial += 1
+                hit = True
+                break
+        if hit:
+            continue
+
+        # 3) 결합태그 헤드 일치 (예: "조용한 자리" vs "조용한")
+        for tag in store_set:
+            head = tag.split()[0]
+            if head == rq:
+                partial += 1
+                break
+
+    req_n = max(1, len(request_moods))
+    # 정확 매치 1.0, 부분 매치 0.5 가중
+    score = (exact + 0.5 * partial) / req_n
+    # 0~1 범위 유지
+    return max(0.0, min(1.0, score))
 
 def _congestion_compat_score(request_level: str, store_level: str) -> float:
     order = {"low": 0, "medium": 1, "high": 2}
@@ -498,6 +540,8 @@ class RecommendStoreView(APIView):
                 ai_level_map[s.id] = s.congestion or "medium"
 
         # 4) 반경 필터 및 스코어링
+        debug = str(request.query_params.get("debug", "false")).lower() == "true"
+
         ranked = []
         for s in qs:
             # 거리
@@ -521,8 +565,14 @@ class RecommendStoreView(APIView):
             dist_sc = _distance_score(d, cutoff=radius)
 
             # 가중치(원하면 조절 가능)
-            score = (mood_sc * 0.55) + (cong_sc * 0.25) + (dist_sc * 0.20)
-            ranked.append((s, round(score, 6)))
+            total = (mood_sc * 0.55) + (cong_sc * 0.25) + (dist_sc * 0.20)
+
+            ranked.append((
+                s,
+                round(total, 6),
+                {"mood": round(mood_sc, 6), "congestion": round(cong_sc, 6), "distance": round(dist_sc, 6)},
+                d
+            ))
 
         # 결과가 너무 없으면(0개) 카테고리만 맞춰 거리순 폴백
         if not ranked:
@@ -532,20 +582,25 @@ class RecommendStoreView(APIView):
                 try:
                     d = haversine(lat, lng, s.latitude, s.longitude)
                 except Exception:
-                    d = None
+                    d = float("inf")
                 backup.append((s, 0.0, d if d is not None else float("inf")))
             backup.sort(key=lambda x: x[2])
-            top = [s for (s, _, _) in backup[:top_k]]
-            ser = StoreSerializer(top, many=True, context={"request": request})
+            top = [t[0] for t in backup[:top_k]]
 
             # chat message (결과 없음일 때)
             chat_message = get_gemini_chat_reply(
                 user_input=user_input,
                 parsed=parsed,
                 top1_name=top[0].name if top else None,
-                top1_distance_m=(backup[0][2] if backup else None),
+                top1_distance_m=(backup[0][1] if backup else None),
                 top1_url=(top[0].kakao_url if top else None),
             ) or '조건에 맞는 결과가 적어 반경을 넓혀보겠솜! 가까운 순으로 보여줬솜!'
+
+            if not debug:
+                return Response({"chat_message": chat_message})
+            
+            # debug=true일 때만 무거운 페이로드 포함
+            ser = StoreSerializer(top, many=True, context={"request": request})
 
             return Response({
                 "parsed": {"mood": req_mood_str, "congestion": req_congestion, "category": req_category},
@@ -557,15 +612,15 @@ class RecommendStoreView(APIView):
 
         # 5) 상위 N개 반환
         ranked.sort(key=lambda x: x[1], reverse=True)
-        top = [s for (s, _) in ranked[:top_k]]
-        ser = StoreSerializer(top, many=True, context={"request": request})
-        # 점수도 함께 보고 싶으면 아래처럼 score 맵을 추가로 제공
-        scores = {s.id: sc for (s, sc) in ranked[:top_k]}
+        top = [t[0] for t in ranked[:top_k]]
             
         # chat message (정상 매칭)
         # Top1 정보만 넘겨도 충분히 자연스럽게 말해줌
-        top1, _ = ranked[0]
-        top1_dist = haversine(lat, lng, top1.latitude, top1.longitude)
+        top1 = ranked[0][0]
+        # d(거리)를 튜플에 넣어뒀으니 우선 그걸 쓰고, None이면 계산
+        top1_dist = ranked[0][3]
+        if top1_dist is None:
+            top1_dist = haversine(lat, lng, top1.latitude, top1.longitude)
             
         chat_message = get_gemini_chat_reply(
             user_input=user_input,
@@ -574,7 +629,20 @@ class RecommendStoreView(APIView):
             top1_distance_m=top1_dist,
             top1_url=top1.kakao_url,
         ) or f'원하는 장소를 찾았솜! "{top1.name}"로 가보는 건 어떠솜?'
-            
+        
+        if not debug:
+            # 프로덕션: 가벼운 응답만
+            return Response({"chat_message": chat_message})
+        
+        ser = StoreSerializer(top, many=True, context={"request": request})
+        scores = [{
+            "store_id": t[0].id,
+            "name": t[0].name,
+            "total": t[1],
+            "detail": t[2],   # {"mood":..., "congestion":..., "distance":...}
+            "distance_m": t[3],
+        } for t in ranked[:top_k]]
+
         return Response({
             "parsed": {"mood": req_mood_str, "congestion": req_congestion, "category": req_category},
             "count": len(top),
