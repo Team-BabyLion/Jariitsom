@@ -126,7 +126,8 @@ class VisitLog(models.Model):
         ('high', '혼잡'),
     ]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)  # 방문자
+    # 방문자(방문 기록을 작성한 사용자가 탈퇴해도 방문 기록은 남겨짐 -> 사용자만 null이 됨)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     store = models.ForeignKey('Store', on_delete=models.CASCADE, related_name='visit_logs')  # 어떤 가게
     
     visit_count = models.PositiveIntegerField(choices=VISIT_COUNT_CHOICES)  # 몇 명 방문
@@ -141,4 +142,5 @@ class VisitLog(models.Model):
         ]
 
     def __str__(self):
-        return f'{self.store.name} 방문기록 - {self.user.username}'
+        username = self.user.username if self.user else "익명"
+        return f'{self.store.name} 방문기록 - {username}'

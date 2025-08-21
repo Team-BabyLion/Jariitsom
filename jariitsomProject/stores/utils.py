@@ -3,6 +3,55 @@ from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 import time, math
 
+# 위치/반경 파싱 유틸 (추가)
+# ─────────────────────────────────────────────────────────────────
+DEFAULT_LAT = 37.606372     # 동덕여대
+DEFAULT_LNG = 127.041772
+
+def safe_float(v, default=None):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+def in_korea_bounds(lat: float, lng: float) -> bool:
+    # 필요 시 조정 가능
+    return (30.0 <= lat <= 45.0) and (120.0 <= lng <= 135.0)
+
+def read_coords_from_request(request):
+    """
+    우선순위:
+      1) 헤더 X-User-Lat / X-User-Lng
+      2) JSON 바디 lat / lng
+      3) 기본값 (동덕여대)
+    """
+    # 1) 헤더
+    hdr_lat = safe_float(request.headers.get("X-User-Lat"), None)
+    hdr_lng = safe_float(request.headers.get("X-User-Lng"), None)
+
+    # 2) 바디(JSON)
+    data = getattr(request, "data", {}) or {}
+    body_lat = safe_float(data.get("lat"), None)
+    body_lng = safe_float(data.get("lng"), None)
+
+    lat = hdr_lat if hdr_lat is not None else (body_lat if body_lat is not None else DEFAULT_LAT)
+    lng = hdr_lng if hdr_lng is not None else (body_lng if body_lng is not None else DEFAULT_LNG)
+
+    # 좌표 검증 실패 시 기본값
+    if (lat is None) or (lng is None) or (not in_korea_bounds(lat, lng)):
+        lat, lng = DEFAULT_LAT, DEFAULT_LNG
+
+    return lat, lng
+
+def read_radius_topk(request, default_radius=1200.0, default_topk=5):
+    data = getattr(request, "data", {}) or {}
+    radius = safe_float(data.get("radius"), default_radius)
+    try:
+        top_k = int(data.get("top_k", default_topk))
+    except Exception:
+        top_k = default_topk
+    return radius, top_k
+
 # 하버사인: 두 지점의 거리 계산
 def haversine(lat1, lng1, lat2, lng2):
     R = 6371000
