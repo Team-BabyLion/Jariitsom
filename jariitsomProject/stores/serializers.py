@@ -14,7 +14,7 @@ def walk_minutes(distance):
 WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 
 def _parse_range(s: str):
-    if not s or "~" not in s:
+    if not isinstance(s, str) or "~" not in s:
         return None, None
     try:
         a, b = [p.strip() for p in s.split("~", 1)]
@@ -81,30 +81,39 @@ class StoreSerializer(serializers.ModelSerializer):
     
     # 영업시간 관련
     def get_open_status(self, obj):
-        now = timezone.localtime()  # aware (Asia/Seoul)
-        today_hours = (obj.business_hours or {}).get(WEEKDAYS[now.weekday()], {})
+        now = timezone.localtime()
+        w = now.weekday()
+        # business_hours가 dict가 아니거나 None이면 빈 dict로
+        bh = obj.business_hours if isinstance(obj.business_hours, dict) else {}
+        # 오늘 값도 dict가 아니면 빈 dict로
+        today_hours = bh.get(WEEKDAYS[w]) or {}
+        if not isinstance(today_hours, dict):
+            today_hours = {}
 
-        open_t, close_t = _parse_range((today_hours.get("open_close") or "").strip())
-        br_start, br_end = _parse_range((today_hours.get("breaktime") or "").strip())
+        open_close_raw = today_hours.get("open_close")
+        breaktime_raw  = today_hours.get("breaktime")
+        open_t, close_t = _parse_range((open_close_raw  or "").strip())
+        br_start, br_end = _parse_range((breaktime_raw or "").strip())
 
-        status = "영업종료"
-
+        status = "영업종료" # 기본값
         if open_t and close_t:
-            start_dt = _aware_today(open_t, now)   # aware
-            end_dt   = _aware_today(close_t, now)  # aware
-            if end_dt <= start_dt:                 # 자정 넘김
+            start_dt = _aware_today(open_t, now)
+            end_dt   = _aware_today(close_t, now)
+            if end_dt <= start_dt:
                 end_dt += timedelta(days=1)
 
             if start_dt <= now < end_dt:
                 if br_start and br_end:
                     br_s = _aware_today(br_start, now)
                     br_e = _aware_today(br_end, now)
-                    if br_e <= br_s:               # 자정 넘김
+                    if br_e <= br_s:
                         br_e += timedelta(days=1)
                     status = "브레이크타임" if (br_s <= now < br_e) else "영업중"
                 else:
                     status = "영업중"
+
         return status
+
     
     def get_today_weekday(self, obj):
         w = timezone.localtime().weekday()  # 0=월 ... 6=일
