@@ -142,4 +142,5 @@ class VisitLog(models.Model):
         ]
 
     def __str__(self):
-        return f'{self.store.name} 방문기록 - {self.user.username}'
+        username = self.user.username if self.user else "익명"
+        return f'{self.store.name} 방문기록 - {username}'

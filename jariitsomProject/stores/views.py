@@ -13,17 +13,51 @@ from .serializers import StoreSerializer
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
-from .utils import haversine
-from .apis import get_gemini_conditions
+from .utils import haversine, read_coords_from_request, read_radius_topk
+from .apis import get_gemini_conditions, get_gemini_chat_reply
+
 from .models import Store, Bookmark, VisitLog
-from .forecast import forecast_congestion
+from .forecast import forecast_congestion, ensure_ai_congestion_now
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from django.utils import timezone
 
 from .kakao_ai_crawl import crawl_kakao_ai_by_place_id, extract_place_id
 from .mood_extractor import pick_mood_tags
+
+WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
+
+def _parse_range(s: str):
+    if not s or "~" not in s:
+        return None, None
+    try:
+        a, b = [p.strip() for p in s.split("~", 1)]
+        ha, ma = map(int, a.split(":"))
+        hb, mb = map(int, b.split(":"))
+        return time(ha, ma), time(hb, mb)
+    except Exception:
+        return None, None
+
+def _aware_today(t: time, base_dt):
+    naive = datetime.combine(base_dt.date(), t)
+    return timezone.make_aware(naive, base_dt.tzinfo)
+
+# 영업종료일 경우만 true
+def _is_closed_now(store, now):
+    bh = getattr(store, "business_hours", None) or {}
+    today = bh.get(WEEKDAYS[now.weekday()], {}) or {}
+
+    open_t, close_t = _parse_range((today.get("open_close") or "").strip())
+    if not (open_t and close_t):
+        return False
+
+    start_dt = _aware_today(open_t, now)
+    end_dt   = _aware_today(close_t, now)
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+
+    return not (start_dt <= now < end_dt)
 
 class StoreViewSet(ModelViewSet):
     queryset = Store.objects.all()
@@ -83,6 +117,10 @@ class StoreViewSet(ModelViewSet):
             ai_level = ensure_ai_congestion_now(s)
             s._ai_level = ai_level
             s._ai_rank = LEVEL_RANK.get(ai_level, 1)
+
+        # 영업종료인 가게는 리스트에서 조회 불가능
+        now = timezone.localtime()
+        items = [s for s in items if not _is_closed_now(s, now)]
 
         if ordering == 'distance': # 거리순 정렬
             # 거리가 없다면 무한대로 취급 -> 가장 뒤로 감
@@ -380,7 +418,7 @@ def update_mood_tags(request, store_id):
     # (선택) 모델에 store_summary 필드 있다면 같이 저장
     if hasattr(store, "store_summary"):
         store.store_summary = data.get("store_summary", "")
-
+    
     store.save()
     return Response({
         'message': '무드 태그가 업데이트되었습니다.',
@@ -412,18 +450,60 @@ def _normalize_congestion(value: str) -> str:
 def _tokenize_mood(text: str) -> List[str]:
     if not text:
         return []
-    # 쉼표/공백 기준 단순 분할 (예: "조용한, 감성적인" → ["조용한","감성적인"])
     raw = text.replace(",", " ").split()
     return [t.strip() for t in raw if t.strip()]
 
 def _mood_overlap_score(request_moods: List[str], store_moods: List[str]) -> float:
     if not request_moods or not store_moods:
         return 0.0
-    rq = set(request_moods)
-    st = set([m.strip() for m in (store_moods or []) if m])
-    inter = len(rq & st)
-    # 요청 충족 비율(요청 태그 중 몇 개를 만족했는가)
-    return inter / max(1, len(rq))
+    # 가게 태그 정규화(공통 후행어 제거)
+    CLEAN_SUFFIX = (" 분위기", " 무드", " 느낌", " 좌석", " 자리")
+    sm = []
+    for tag in store_moods:
+        if not tag:
+            continue
+        x = tag.strip().lower()
+        for suf in CLEAN_SUFFIX:
+            if x.endswith(suf):
+                x = x[: -len(suf)]
+        sm.append(x)
+    store_set = set(sm)
+
+    exact = 0
+    partial = 0
+
+    for rq in request_moods:
+        rq = rq.strip().lower()
+        if not rq:
+            continue
+
+        # 1) 정확 일치
+        if rq in store_set:
+            exact += 1
+            continue
+
+        # 2) 부분 일치(요청 단어가 태그 안에 포함 / 태그가 요청 안에 포함)
+        hit = False
+        for tag in store_set:
+            if rq in tag or tag in rq:
+                partial += 1
+                hit = True
+                break
+        if hit:
+            continue
+
+        # 3) 결합태그 헤드 일치 (예: "조용한 자리" vs "조용한")
+        for tag in store_set:
+            head = tag.split()[0]
+            if head == rq:
+                partial += 1
+                break
+
+    req_n = max(1, len(request_moods))
+    # 정확 매치 1.0, 부분 매치 0.5 가중
+    score = (exact + 0.5 * partial) / req_n
+    # 0~1 범위 유지
+    return max(0.0, min(1.0, score))
 
 def _congestion_compat_score(request_level: str, store_level: str) -> float:
     order = {"low": 0, "medium": 1, "high": 2}
@@ -461,10 +541,9 @@ class RecommendStoreView(APIView):
             return Response({"error": "message가 필요합니다."}, status=status.HTTP_400_BAD_REQUEST)
 
         # 위치/반경 파라미터
-        lat = float(request.data.get("lat", 37.606372))
-        lng = float(request.data.get("lng", 127.041772))
-        radius = float(request.data.get("radius", 1200))
-        top_k = int(request.data.get("top_k", 5))
+        # ★ 위치/반경 파싱 (헤더/바디/기본값 폴백)
+        lat, lng = read_coords_from_request(request)
+        radius, top_k = read_radius_topk(request, default_radius=1200.0, default_topk=5)
 
         # 1) Gemini로 의도 추출
         gemini_text = get_gemini_conditions(user_input)
@@ -487,11 +566,9 @@ class RecommendStoreView(APIView):
             qs = qs.filter(category=req_category)
 
         # ============혼잡도 부분 변경됨============
-        ######## 영업 중이 아닌 가게들 혼잡도 unknown으로 수정 할 수도
-        ########## 그러면 추천할 때 혼잡도 unknown 인 경우 추천하는 가게 후보에서 제외하는 코드 넣어야 할 수도
         # # 3) 현재 혼잡도 반영 갱신(후보만)
         now = timezone.localtime()
-        from .forecast import ensure_ai_congestion_now  # 순환참조 방지용 로컬 임포트
+
         ai_level_map = {}  # store_id -> 'low'|'medium'|'high' (예외 시 medium)
         for s in qs.only("id", "congestion"):
             try:
@@ -500,6 +577,8 @@ class RecommendStoreView(APIView):
                 ai_level_map[s.id] = s.congestion or "medium"
 
         # 4) 반경 필터 및 스코어링
+        debug = str(request.query_params.get("debug", "false")).lower() == "true"
+
         ranked = []
         for s in qs:
             # 거리
@@ -523,8 +602,14 @@ class RecommendStoreView(APIView):
             dist_sc = _distance_score(d, cutoff=radius)
 
             # 가중치(원하면 조절 가능)
-            score = (mood_sc * 0.55) + (cong_sc * 0.25) + (dist_sc * 0.20)
-            ranked.append((s, round(score, 6)))
+            total = (mood_sc * 0.55) + (cong_sc * 0.25) + (dist_sc * 0.20)
+
+            ranked.append((
+                s,
+                round(total, 6),
+                {"mood": round(mood_sc, 6), "congestion": round(cong_sc, 6), "distance": round(dist_sc, 6)},
+                d
+            ))
 
         # 결과가 너무 없으면(0개) 카테고리만 맞춰 거리순 폴백
         if not ranked:
@@ -534,21 +619,25 @@ class RecommendStoreView(APIView):
                 try:
                     d = haversine(lat, lng, s.latitude, s.longitude)
                 except Exception:
-                    d = None
+                    d = float("inf")
                 backup.append((s, 0.0, d if d is not None else float("inf")))
             backup.sort(key=lambda x: x[2])
-            top = [s for (s, _, _) in backup[:top_k]]
-            ser = StoreSerializer(top, many=True, context={"request": request})
+            top = [t[0] for t in backup[:top_k]]
 
             # chat message (결과 없음일 때)
-            from .apis import get_gemini_chat_reply
             chat_message = get_gemini_chat_reply(
                 user_input=user_input,
                 parsed=parsed,
                 top1_name=top[0].name if top else None,
-                top1_distance_m=(backup[0][2] if backup else None),
+                top1_distance_m=(backup[0][1] if backup else None),
                 top1_url=(top[0].kakao_url if top else None),
             ) or '조건에 맞는 결과가 적어 반경을 넓혀보겠솜! 가까운 순으로 보여줬솜!'
+
+            if not debug:
+                return Response({"chat_message": chat_message})
+            
+            # debug=true일 때만 무거운 페이로드 포함
+            ser = StoreSerializer(top, many=True, context={"request": request})
 
             return Response({
                 "parsed": {"mood": req_mood_str, "congestion": req_congestion, "category": req_category},
@@ -560,17 +649,16 @@ class RecommendStoreView(APIView):
 
         # 5) 상위 N개 반환
         ranked.sort(key=lambda x: x[1], reverse=True)
-        top = [s for (s, _) in ranked[:top_k]]
-        ser = StoreSerializer(top, many=True, context={"request": request})
-        # 점수도 함께 보고 싶으면 아래처럼 score 맵을 추가로 제공
-        scores = {s.id: sc for (s, sc) in ranked[:top_k]}
+        top = [t[0] for t in ranked[:top_k]]
             
         # chat message (정상 매칭)
         # Top1 정보만 넘겨도 충분히 자연스럽게 말해줌
-        top1, _ = ranked[0]
-        top1_dist = haversine(lat, lng, top1.latitude, top1.longitude)
+        top1 = ranked[0][0]
+        # d(거리)를 튜플에 넣어뒀으니 우선 그걸 쓰고, None이면 계산
+        top1_dist = ranked[0][3]
+        if top1_dist is None:
+            top1_dist = haversine(lat, lng, top1.latitude, top1.longitude)
             
-        from .apis import get_gemini_chat_reply
         chat_message = get_gemini_chat_reply(
             user_input=user_input,
             parsed=parsed,
@@ -578,7 +666,20 @@ class RecommendStoreView(APIView):
             top1_distance_m=top1_dist,
             top1_url=top1.kakao_url,
         ) or f'원하는 장소를 찾았솜! "{top1.name}"로 가보는 건 어떠솜?'
-            
+        
+        if not debug:
+            # 프로덕션: 가벼운 응답만
+            return Response({"chat_message": chat_message})
+        
+        ser = StoreSerializer(top, many=True, context={"request": request})
+        scores = [{
+            "store_id": t[0].id,
+            "name": t[0].name,
+            "total": t[1],
+            "detail": t[2],   # {"mood":..., "congestion":..., "distance":...}
+            "distance_m": t[3],
+        } for t in ranked[:top_k]]
+
         return Response({
             "parsed": {"mood": req_mood_str, "congestion": req_congestion, "category": req_category},
             "count": len(top),
@@ -587,7 +688,7 @@ class RecommendStoreView(APIView):
             "chat_message": chat_message,
         })
 
-
+import random
 ### 챗봇을 시작할 때 질문하는 가이드 양식 보여주는 api
 class RecommendGuideView(APIView):
     def get(self, request):
@@ -598,9 +699,11 @@ class RecommendGuideView(APIView):
             "북적이지 않는 바 조용히 술 마시고 싶어요",
             "카페인데 사람 너무 많은 건 피하고 싶어"
         ]
+        random_example = random.choice(example_messages)
+
         return Response({
             "message": "아래 예시를 참고해서 솜봇에게 말을 걸어보세요!",
-            "examples": example_messages
+            "examples": random_example
         })
     
 # 혼잡도 예측
