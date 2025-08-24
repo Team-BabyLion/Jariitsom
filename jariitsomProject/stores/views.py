@@ -141,7 +141,7 @@ class StoreViewSet(ModelViewSet):
             items.sort(key=lambda s: s.id)
 
         # 무한 스크롤을 위한 서버 슬라이싱
-        limit = int(request.query_params.get('limit', 50))
+        limit = int(request.query_params.get('limit', 300)) # 큰 부담이 없는 듯 하여 기본 300개로 모든 가게가 뜨도록 함
         offset = int(request.query_params.get('offset', 0))
         sliced = items[offset:offset + limit]
 
@@ -689,7 +689,7 @@ class RecommendStoreView(APIView):
 
         # 최종 메시지: 거리/가게명/URL 포함, '솜!' 톤 유지
         # 말풍선 1
-        chat_message = f'{dist_text} 정도에 "{name}"가 있솜!'
+        chat_message = f'{dist_text} 정도에 "{name}" 카페가 있솜!'
         payload = {"chat_message": chat_message}
         # 말풍선 2 (URL이 있으면)
         if url:
