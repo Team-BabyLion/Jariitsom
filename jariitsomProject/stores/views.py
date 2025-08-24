@@ -689,7 +689,7 @@ class RecommendStoreView(APIView):
 
         # 최종 메시지: 거리/가게명/URL 포함, '솜!' 톤 유지
         # 말풍선 1
-        chat_message = f'{dist_text} 정도에 "{name}" 카페가 있솜!'
+        chat_message = f'{dist_text} 정도에 "{name}"가 있솜!'
         payload = {"chat_message": chat_message}
         # 말풍선 2 (URL이 있으면)
         if url:

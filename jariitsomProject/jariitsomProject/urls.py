@@ -23,7 +23,7 @@ from django.conf.urls.static import static
 from django.http import HttpResponse
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('adminSom/', admin.site.urls),
 
     #home 화면 없어서 임시로 만든거
     path('', lambda request: HttpResponse("임시 홈")),
