@@ -14,7 +14,6 @@ import os
 
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
 
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI")
@@ -23,6 +22,12 @@ GEMINI_API_KEY=os.getenv("GEMINI_API_KEY")
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 1) 로컬 개발용 .env
+load_dotenv(BASE_DIR / ".env")
+
+# 2) 서버 배포용 .env.prod (있으면 덮어씀)
+load_dotenv(BASE_DIR / ".env.prod", override=True)
 
 
 # Quick-start development settings - unsuitable for production
@@ -47,7 +52,7 @@ def get_secret(setting, secrets=secrets):
 SECRET_KEY = get_secret("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False #True
+DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
