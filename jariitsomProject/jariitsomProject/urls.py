@@ -15,7 +15,7 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -28,8 +28,8 @@ urlpatterns = [
     #home 화면 없어서 임시로 만든거
     path('', lambda request: HttpResponse("임시 홈")),
 
-    path('', include('accounts.urls')),
-    path('authaccounts/', include('allauth.urls')), #소셜 로그인
-    path('', include('stores.urls')), # 혼잡도 구현을 위해서는 해당 줄 삭제 절대 금물
+    path('api/', include('accounts.urls')),
+    path('api/authaccounts/', include('allauth.urls')), #소셜 로그인
+    path('api/', include('stores.urls')), # 혼잡도 구현을 위해서는 해당 줄 삭제 절대 금물
 ]
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

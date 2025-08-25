@@ -24,6 +24,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, time
 from django.utils import timezone
 
+from django.contrib.auth.decorators import login_required
+
 from .kakao_ai_crawl import crawl_kakao_ai_by_place_id, extract_place_id
 from .mood_extractor import pick_mood_tags
 
@@ -37,15 +39,18 @@ def _meters_to_text(m):
 WEEKDAYS = ['월', '화', '수', '목', '금', '토', '일']
 
 def _parse_range(s: str):
-    if not s or "~" not in s:
+    if not isinstance(s, str) or "~" not in s:
         return None, None
     try:
         a, b = [p.strip() for p in s.split("~", 1)]
         ha, ma = map(int, a.split(":"))
         hb, mb = map(int, b.split(":"))
+        if hb == 24 and mb == 0:
+            hb = 0
         return time(ha, ma), time(hb, mb)
     except Exception:
         return None, None
+
 
 def _aware_today(t: time, base_dt):
     naive = datetime.combine(base_dt.date(), t)
@@ -103,14 +108,13 @@ class StoreViewSet(ModelViewSet):
     def list(self, request, *args, **kwargs):
         from .forecast import ensure_ai_congestion_now
         qs = self.filter_queryset(self.get_queryset())
+        # 커스텀 정렬을 위해 쿼리셋을 리스트로 변환
+        items = list(qs)
 
         # distance, relaxed, rating 등 정렬 모드 읽기
         ordering = request.query_params.get('ordering')
         user_lat = request.query_params.get('user_lat')
         user_lng = request.query_params.get('user_lng')
-
-        # 커스텀 정렬을 위해 쿼리셋을 리스트로 변환
-        items = list(qs)
 
         # 정렬과 무관하게 좌표가 오면 거리 계산
         if user_lat and user_lng:
@@ -141,12 +145,13 @@ class StoreViewSet(ModelViewSet):
             items.sort(key=lambda s: s.id)
 
         # 무한 스크롤을 위한 서버 슬라이싱
-        limit = int(request.query_params.get('limit', 50))
+        limit = int(request.query_params.get('limit', 250))
         offset = int(request.query_params.get('offset', 0))
         sliced = items[offset:offset + limit]
 
         # 슬라이싱 한 것들을 시리얼라이즈
         serializer = self.get_serializer(sliced, many=True)
+        data = [s for s in serializer.data if s.get("open_status") != "영업종료"]
         return Response(serializer.data)
     
     # ========= 지도 가게 위치 표시 ===========
@@ -311,8 +316,9 @@ class StoreViewSet(ModelViewSet):
 
     
 # 클릭할 때마다 즐겨찾기 추가, 삭제
+@login_required
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+#@permission_classes([IsAuthenticated])
 def toggle_bookmark(request, store_id):
     user = request.user
     store = Store.objects.get(id=store_id)
@@ -325,10 +331,11 @@ def toggle_bookmark(request, store_id):
     return Response(status=201) 
 
 # 로그인한 사용자의 즐겨찾기 리스트 가져오기
+@login_required
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+#@permission_classes([IsAuthenticated])
 def list_bookmarks(request):
-    user = request.user
+    user = request.user.id #id추가함
     bookmarks = Bookmark.objects.filter(user=user).select_related('store')
     # 해당 사용자가 북마크한 가게 목록을 가져옴과 동시에 store 정보까지 가져옴
     serializer = BookmarkSerializer(bookmarks, many=True, context={'request':request})
@@ -537,6 +544,9 @@ class RecommendStoreView(APIView):
     POST /recommend/?lat=..&lng=..
     body: { "message": "조용하고 감성적인 카페 추천" }
     """
+    def get(self, request):
+        return self._recommend(request)
+
     def post(self, request):
         user_input = request.data.get("message", "")
         if not user_input:

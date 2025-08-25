@@ -20,10 +20,11 @@ def _parse_range(s: str):
         a, b = [p.strip() for p in s.split("~", 1)]
         ha, ma = map(int, a.split(":"))
         hb, mb = map(int, b.split(":"))
+        if hb == 24 and mb == 0:
+            hb = 0
         return time(ha, ma), time(hb, mb)
     except Exception:
-        return None, None # 영업시간 포맷이 비정상일 경우
-
+        return None, None
 def _aware_today(t: time, base_dt):
     naive = datetime.combine(base_dt.date(), t)
     return timezone.make_aware(naive, base_dt.tzinfo)
@@ -92,10 +93,14 @@ class StoreSerializer(serializers.ModelSerializer):
 
         open_close_raw = today_hours.get("open_close")
         breaktime_raw  = today_hours.get("breaktime")
+
+        if open_close_raw and "휴무" in open_close_raw:
+            return "영업종료"
+
         open_t, close_t = _parse_range((open_close_raw  or "").strip())
         br_start, br_end = _parse_range((breaktime_raw or "").strip())
 
-        status = "영업종료" # 기본값
+        status = "정보없음" # 기본값
         if open_t and close_t:
             start_dt = _aware_today(open_t, now)
             end_dt   = _aware_today(close_t, now)
@@ -108,7 +113,10 @@ class StoreSerializer(serializers.ModelSerializer):
                     br_e = _aware_today(br_end, now)
                     if br_e <= br_s:
                         br_e += timedelta(days=1)
-                    status = "브레이크타임" if (br_s <= now < br_e) else "영업중"
+                    if br_s <= now < br_e:
+                        status = "브레이크타임"
+                    else:
+                        status = "영업중"
                 else:
                     status = "영업중"
 
@@ -118,7 +126,6 @@ class StoreSerializer(serializers.ModelSerializer):
     def get_today_weekday(self, obj):
         w = timezone.localtime().weekday()  # 0=월 ... 6=일
         return WEEKDAYS[w]
-
     class Meta:
         model = Store
         fields = [ 'id', 'category', 'photo', 'name', 'rating', 'address', 

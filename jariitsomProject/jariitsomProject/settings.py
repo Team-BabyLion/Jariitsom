@@ -15,20 +15,20 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
-KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI")
-SITE_DOMAIN = os.getenv("SITE_DOMAIN")
-GEMINI_API_KEY=os.getenv("GEMINI_API_KEY")
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 2) 서버 배포용 .env.prod (있으면 덮어씀)
+# load_dotenv(BASE_DIR / ".env.prod", override=True)
+load_dotenv("/srv/app/backend/.env.prod", override=True)
 
 # 1) 로컬 개발용 .env
 load_dotenv(BASE_DIR / ".env")
 
-# 2) 서버 배포용 .env.prod (있으면 덮어씀)
-load_dotenv(BASE_DIR / ".env.prod", override=True)
-
+KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
+KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI")
+SITE_DOMAIN = os.getenv("SITE_DOMAIN")
+GEMINI_API_KEY=os.getenv("GEMINI_API_KEY")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
@@ -52,7 +52,7 @@ def get_secret(setting, secrets=secrets):
 SECRET_KEY = get_secret("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False  #True
 
 ALLOWED_HOSTS = ['*']
 
@@ -113,7 +113,7 @@ AUTHENTICATION_BACKENDS = [
 
 SOCIALACCOUNT_LOGIN_ON_GET = True
 
-LOGIN_REDIRECT_URL = '/'
+LOGIN_REDIRECT_URL = '/home'
 
 REST_FRAMEWORK = { 
    'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -128,7 +128,7 @@ ROOT_URLCONF = 'jariitsomProject.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / "templates"],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -189,7 +189,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
@@ -203,12 +204,16 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # 크로스 헤어 설정
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+    "http://13.125.243.8",
+    "https://hayeoniill.github.io",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+    "http://13.125.243.8",
+    "https://hayeoniill.github.io",
 ]
